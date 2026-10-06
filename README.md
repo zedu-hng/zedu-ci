@@ -36,6 +36,34 @@ callers never ship upstream.
 
 `lead-approval-review.yml` stays a plain workflow in each repo: it only exists to fire the relay.
 
+### Checks and builds
+
+| File | What it does | Caller trigger |
+|---|---|---|
+| `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review (zedu-mobile) | `pull_request` |
+| `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
+| `pr-scans.yml` | Semgrep and ClamAV, with per-repo rule packs, paths and excludes | `pull_request` |
+| `fork-build.yml` | Relays the fork's PR build as `Fork build`, posts `Backend dependency`, comments the artifacts | `pull_request_target`, `issue_comment`, `workflow_dispatch`, `schedule` |
+| `pr-build-react-native.yml` | Fork side: Android APK and iOS simulator build (zedu-mobile) | `push`, `workflow_dispatch` in the fork |
+| `pr-build-flutter.yml` | Fork side: macOS, Windows and Linux builds (zedu-desktop) | `push`, `workflow_dispatch` in the fork |
+
+Checks run Zedu's own scripts and configs from the base branch, so a PR can't loosen them. Each
+check is posted as its own commit status by `pr-review-comment.yml`.
+
+## Backend for builds
+
+Every fork build talks to our dev backend, `api.hng.groups.zedu.chat`, unless the PR description has
+a line `Backend URL: https://api.<team>.groups.zedu.chat` (for a PR that needs backend work that isn't
+on dev yet). Then:
+
+- the build uses that backend, and `Backend dependency` stays red until the line is removed;
+- the fork's build jobs are named `<target> · <backend host>`, and Fork build fails when that host
+  doesn't match the PR description (the line changed after the build), until the fork rebuilds.
+
+`.env` is written from `build/<repo>.env`, read from `main` at build time, with `{{backend}}` and
+`{{client}}` filled in. Public values only: anything in `.env` ships inside the app. Contributor forks
+need no `APP_ENV_FILE` or other setup.
+
 ## teams.yml
 
 One entry per team, keyed by the GitHub org that owns the team's forks (the same org for all three

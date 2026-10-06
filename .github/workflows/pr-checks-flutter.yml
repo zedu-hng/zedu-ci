@@ -1,0 +1,157 @@
+name: PR checks (Flutter)
+
+# Reusable. Review-org replacement for Zedu's "Vulnerability check pipeline" (analyze, format, tests,
+# Trivy) and "Security Scans" (forbidden patterns, Lazarus scanner) in a Flutter repo (zedu-desktop).
+# Those workflows are disabled in zedu-hng (their files stay as upstream, so syncs don't conflict).
+# Same commands and versions; four jobs become one, and each check runs even if an earlier one fails.
+# The forbidden-pattern script runs from the base branch, so a PR can't loosen it for itself.
+#
+# Untrusted: runs PR code with a read-only token. It only uploads pr-checks-results, which
+# pr-review-comment.yml posts as commit statuses.
+#
+# Caller: .github/workflows/pr-checks.yml named "PR checks", on pull_request (opened, synchronize,
+# reopened, ready_for_review).
+# Caller permissions: contents: read.
+
+on:
+  workflow_call:
+    inputs:
+      flutter_version:
+        type: string
+        default: "3.41.5"
+      forbidden_pattern_script:
+        description: Path of Zedu's forbidden-pattern scan, read from the base branch
+        type: string
+        default: scripts/forbidden-pattern-scan.sh
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Text scans first, on the tree as the PR left it (before pub get adds .dart_tool).
+      - name: Forbidden patterns
+        id: forbidden
+        continue-on-error: true
+        env:
+          SCRIPT: ${{ inputs.forbidden_pattern_script }}
+        run: |
+          git fetch -q --no-tags --depth=1 origin "$BASE_REF"
+          git show "FETCH_HEAD:$SCRIPT" > "$RUNNER_TEMP/forbidden-pattern-scan.sh"
+          bash "$RUNNER_TEMP/forbidden-pattern-scan.sh" "$GITHUB_WORKSPACE"
+
+      - name: Lazarus scanner
+        id: lazarus
+        continue-on-error: true
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/lazarus_scanner.py" \
+            https://raw.githubusercontent.com/hngprojects/lazarus-scanner/main/lazarus_scanner.py
+          [ -s "$RUNNER_TEMP/lazarus_scanner.py" ] || { echo "::error::lazarus_scanner.py is empty or missing"; exit 1; }
+          python3 "$RUNNER_TEMP/lazarus_scanner.py"
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        id: install
+        run: |
+          flutter pub get
+          # .env is a bundled asset (pubspec.yaml), so it must exist; checks don't need real values.
+          touch .env
+
+      - name: Analyze
+        id: analyze
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Format
+        id: format
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Tests
+        id: tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: flutter test
+
+      - name: Trivy
+        id: trivy
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: 1
+
+      - name: Results
+        if: always()
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          FORBIDDEN: ${{ steps.forbidden.outcome }}
+          LAZARUS: ${{ steps.lazarus.outcome }}
+          ANALYZE: ${{ steps.analyze.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          TRIVY: ${{ steps.trivy.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=0
+          {
+            echo "### PR checks for \`${SHA:0:7}\`"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          : > results.tsv
+          row() { # context outcome
+            local state desc
+            case "$2" in
+              success) state=success; desc="Passed" ;;
+              failure) state=failure; desc="Failed; see the PR checks run"; failed=$((failed + 1)) ;;
+              skipped) state=failure; desc="Not run: flutter pub get failed"; failed=$((failed + 1)) ;;
+              *) state=failure; desc="${2:-not run}"; failed=$((failed + 1)) ;;
+            esac
+            printf '%s\t%s\t%s\n' "$1" "$state" "$desc" >> results.tsv
+            echo "| $1 | $state: $desc |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          row "Forbidden patterns" "$FORBIDDEN"
+          row "Lazarus scanner" "$LAZARUS"
+          row "Analyze" "$ANALYZE"
+          row "Format" "$FORMAT"
+          row "Tests" "$TESTS"
+          row "Trivy" "$TRIVY"
+          jq -Rn --arg sha "$SHA" --arg url "$RUN_URL" \
+            '{sha: $sha, url: $url, checks: [inputs | split("\t") | {context: .[0], state: .[1], description: .[2]}]}' \
+            < results.tsv > pr-checks-results.json
+          echo "fail=$failed" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pr-checks-results
+          path: pr-checks-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail if a check failed
+        if: always()
+        run: |
+          [ "${fail:-1}" = 0 ] || { echo "::error::${fail:-Some} check(s) failed; see the summary above."; exit 1; }

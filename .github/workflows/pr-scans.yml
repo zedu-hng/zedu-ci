@@ -1,0 +1,121 @@
+name: PR scans
+
+# Reusable. Review-org replacement for the semgrep half of Zedu's "Security checks" and the ClamAV half
+# of "Malware scan" (both disabled in zedu-hng). Same commands and flags, with the per-repo parts as
+# inputs. A separate workflow from PR checks so the ClamAV database update doesn't hold up the rest.
+#
+# Untrusted: runs on PR code with a read-only token. Uploads pr-checks-results, which
+# pr-review-comment.yml posts as commit statuses.
+#
+# Caller: .github/workflows/pr-scans.yml named "PR scans", on pull_request (opened, synchronize,
+# reopened, ready_for_review).
+# Caller permissions: contents: read.
+
+on:
+  workflow_call:
+    inputs:
+      semgrep_configs:
+        description: Space-separated Semgrep rule packs, e.g. "p/typescript p/react p/security-audit"
+        type: string
+        required: true
+      semgrep_paths:
+        description: Space-separated paths Semgrep scans
+        type: string
+        required: true
+      clamav_exclude_dirs:
+        description: Space-separated directory patterns ClamAV skips (.git is always skipped)
+        type: string
+        default: node_modules
+
+permissions:
+  contents: read
+
+jobs:
+  scans:
+    name: Scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Semgrep
+        id: semgrep
+        continue-on-error: true
+        env:
+          CONFIGS: ${{ inputs.semgrep_configs }}
+          PATHS: ${{ inputs.semgrep_paths }}
+        run: |
+          read -ra configs <<< "$CONFIGS"
+          read -ra paths <<< "$PATHS"
+          args=()
+          for c in "${configs[@]}"; do args+=(--config "$c"); done
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep semgrep scan \
+            "${args[@]}" --error --metrics off "${paths[@]}"
+
+      - name: ClamAV
+        id: clamav
+        continue-on-error: true
+        env:
+          EXCLUDES: ${{ inputs.clamav_exclude_dirs }}
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clamav clamav-freshclam
+          sudo systemctl stop clamav-freshclam.service || true
+          sudo freshclam
+          read -ra dirs <<< "$EXCLUDES"
+          args=(--exclude-dir='.git')
+          for d in "${dirs[@]}"; do args+=(--exclude-dir="$d"); done
+          set +e
+          clamscan -ri "${args[@]}" --max-filesize=20M --max-scansize=50M .
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "ClamAV found no infections." ;;
+            1) echo "::error::ClamAV found infected files."; exit 1 ;;
+            *) echo "::error::ClamAV scan failed with status $status."; exit 1 ;;
+          esac
+
+      - name: Results
+        if: always()
+        env:
+          SEMGREP: ${{ steps.semgrep.outcome }}
+          CLAMAV: ${{ steps.clamav.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=0
+          {
+            echo "### PR scans for \`${SHA:0:7}\`"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          : > results.tsv
+          row() {
+            local state=success desc=Passed
+            [ "$2" = success ] || { state=failure; desc="Failed; see the PR scans run"; failed=$((failed + 1)); }
+            printf '%s\t%s\t%s\n' "$1" "$state" "$desc" >> results.tsv
+            echo "| $1 | $state: $desc |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          row "Semgrep" "$SEMGREP"
+          row "ClamAV" "$CLAMAV"
+          jq -Rn --arg sha "$SHA" --arg url "$RUN_URL" \
+            '{sha: $sha, url: $url, checks: [inputs | split("\t") | {context: .[0], state: .[1], description: .[2]}]}' \
+            < results.tsv > pr-checks-results.json
+          echo "fail=$failed" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pr-checks-results
+          path: pr-checks-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail if a scan failed
+        if: always()
+        run: |
+          [ "${fail:-1}" = 0 ] || { echo "::error::${fail:-Some} scan(s) failed; see the summary above."; exit 1; }
