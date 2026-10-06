@@ -16,6 +16,9 @@ check "backend: valid, trailing slash" "api.flamingo.groups.zedu.chat" "$(backen
 check "backend: case, backticks" "api.x-y.groups.zedu.chat" "$(backend_from_body 'backend url:  `https://api.x-y.groups.zedu.chat`')"
 check "backend: http" "invalid" "$(backend_from_body 'Backend URL: http://api.x.groups.zedu.chat')"
 check "backend: other host" "invalid" "$(backend_from_body 'Backend URL: https://evil.example')"
+check "backend: space inside" "invalid" "$(backend_from_body 'Backend URL: https://api.al pha.groups.zedu.chat')"
+check "backend: two spaces, angle brackets" "api.team.groups.zedu.chat" "$(backend_from_body 'Backend URL:  <https://api.team.groups.zedu.chat>  ')"
+check "backend: no space after colon" "api.team.groups.zedu.chat" "$(backend_from_body 'Backend URL:https://api.team.groups.zedu.chat')"
 
 # Stub gh: status reads come from $STATUSES, writes are logged to $WRITES.
 WRITES=$(mktemp); READS=$(mktemp)

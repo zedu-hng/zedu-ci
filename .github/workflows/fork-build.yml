@@ -23,8 +23,8 @@ name: Fork build
 # Caller: .github/workflows/fork-build.yml named "Fork build", with
 #   run-name: "Fork build #<PR>" (the sweep reads it), on pull_request_target (opened, synchronize,
 #   reopened, ready_for_review, edited), issue_comment (created), workflow_dispatch with inputs `pr`
-#   and `attempt`, and schedule. The per-PR concurrency group lives in the caller, and an edit joins
-#   it only under the same Backend URL condition as the relay job below.
+#   and `attempt`, and schedule. The per-PR concurrency group lives in the caller; edits must get a
+#   group of their own (the `edit` job dispatches the relay when it matters).
 # Caller permissions: actions: write, contents: read, pull-requests: write, statuses: write.
 # The caller repo needs the fork-build-wait environment (3-minute wait timer, default branch only).
 
@@ -112,21 +112,58 @@ jobs:
         env:
           ATTEMPT: ${{ github.event.inputs.attempt }}
 
+  # A description edit: only the Backend URL line matters, and backend-url.sh decides that, the same
+  # parser the fork's build gate uses. Edits run in their own concurrency group (set by the caller),
+  # so a template tick never cancels a relay waiting on the fork build. When the backend changed,
+  # this dispatches the relay, which joins the PR's group, posts Backend dependency and re-checks.
+  edit:
+    name: Check Backend URL edit
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'edited' &&
+      github.event.changes.body != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      BODY: ${{ github.event.pull_request.body }}
+      OLD_BODY: ${{ github.event.changes.body.from }}
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Compare backends
+        run: |
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/backend-url.sh
+          old=$(backend_from_body "$OLD_BODY")
+          new=$(backend_from_body "$BODY")
+          if [ "$old" = "$new" ]; then
+            echo "Backend URL unchanged (${new:-none}); nothing to re-check."
+            exit 0
+          fi
+          echo "Backend URL changed: ${old:-none} -> ${new:-none}. Re-checking Fork build."
+          gh workflow run fork-build.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" -f pr="$PR_NUMBER" -f attempt=0
+
   relay:
     name: Relay fork build
     needs: delay
-    # A body edit only matters when the old or new body has a Backend URL value line (contains()
-    # ignores case). "backend url:" followed by "https" is a value line; the template's own comment
-    # quotes the label, so it doesn't match. Template ticks and other edits take no runner.
+    # Edits go to the `edit` job, which dispatches this relay only when the Backend URL changed.
     if: >-
       always() && needs.delay.result != 'failure' && needs.delay.result != 'cancelled' &&
-      ((github.event_name == 'pull_request_target' &&
-        (github.event.action != 'edited' ||
-         (github.event.changes.body != null &&
-          (contains(github.event.pull_request.body, 'backend url: https') ||
-           contains(github.event.pull_request.body, 'backend url:https') ||
-           contains(github.event.changes.body.from, 'backend url: https') ||
-           contains(github.event.changes.body.from, 'backend url:https'))))) ||
+      ((github.event_name == 'pull_request_target' && github.event.action != 'edited') ||
        github.event_name == 'workflow_dispatch' ||
        (github.event.issue.pull_request &&
         (github.event.comment.body == '/fork-build' || startsWith(github.event.comment.body, '/fork-build '))))

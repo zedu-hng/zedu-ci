@@ -11,7 +11,14 @@ backend_from_body() {
   local line url
   line=$(printf '%s\n' "$1" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
   [ -n "$line" ] || return 0
-  url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$line")
+  # Trim the label and the edges only: whitespace inside the value makes it invalid, never a
+  # different host. Then drop one pair of Markdown wrappers (`...` or <...>) and trailing slashes.
+  url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]]+$//' <<< "$line")
+  case "$url" in
+    \`*\`) url=${url:1:${#url}-2} ;;
+    \<*\>) url=${url:1:${#url}-2} ;;
+  esac
+  url=$(sed -E 's#/+$##' <<< "$url")
   if [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then
     echo "${BASH_REMATCH[1]}"
   else
