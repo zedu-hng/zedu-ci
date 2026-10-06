@@ -330,10 +330,12 @@ jobs:
           # Build jobs are every job but the gate. The caller prefixes job names ("PR build / ..."),
           # so match the end. A run whose build jobs were all skipped (pushed before the PR existed)
           # is not a build.
-          built=$(jq '[.jobs[] | select((.name | endswith("Open PR check")) | not) | select(.conclusion != "skipped")] | length' <<< "$jobs")
+          # One definition of a build job for both the count and the backend list.
+          defs='def builds: [.jobs[] | select((.name | endswith("Open PR check")) | not) | select(.conclusion != "skipped")];'
+          built=$(jq "$defs builds | length" <<< "$jobs")
           if [ "$built" -eq 0 ] && [ "$conclusion" = "success" ]; then no_build "$url"; exit 0; fi
           # The backend each build job used, from its name ("<target> · <host>").
-          built_backend=$(jq -r '[.jobs[] | select(.conclusion != "skipped") | .name | capture(" · (?<h>[a-z0-9.-]+)$").h] | unique | join(",")' <<< "$jobs")
+          built_backend=$(jq -r "$defs"' [builds[] | .name | capture(" · (?<h>[a-z0-9.-]+)$").h] | unique | join(",")' <<< "$jobs")
           {
             echo "found=true"
             echo "url=$url"

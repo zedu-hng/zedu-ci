@@ -38,11 +38,11 @@ blocks.each do |name, copies|
     next
   end
   reference = copies.first
-  copies.drop(1).each do |copy|
-    next if copy[:text] == reference[:text]
+  differing = copies.drop(1).reject { |copy| copy[:text] == reference[:text] }
+  differing.each do |copy|
     errors << "shared:#{name} differs: #{copy[:file]} vs #{reference[:file]}. Change every copy together."
   end
-  puts "shared:#{name}: #{copies.size} copies match (#{copies.map { |c| c[:file] }.join(", ")})" if errors.none? { |e| e.include?("shared:#{name} ") }
+  puts "shared:#{name}: #{copies.size} copies match (#{copies.map { |c| c[:file] }.join(", ")})" if differing.empty?
 end
 
 if errors.any?
