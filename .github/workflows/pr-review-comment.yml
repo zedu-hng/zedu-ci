@@ -78,10 +78,13 @@ jobs:
         id: pr
         if: env.WORKFLOW == 'PR checks'
         run: |
-          number=$(gh api -X GET "repos/$REPO/pulls" -f state=open \
-            -f head="${HEAD_REPO%%/*}:$HEAD_BRANCH" --jq '.[0].number // empty')
+          # Only the PR whose head is still this run's commit: a run for an older push that finishes
+          # late must not overwrite the report for the newer one.
+          set -o pipefail
+          number=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f head="${HEAD_REPO%%/*}:$HEAD_BRANCH" \
+            | jq -r --arg sha "$HEAD_SHA" 'first(.[] | select(.head.sha == $sha) | .number) // empty')
           if [ -z "$number" ]; then
-            echo "::notice::No open PR for $HEAD_REPO:$HEAD_BRANCH; skipping comment."
+            echo "::notice::No open PR for $HEAD_REPO:$HEAD_BRANCH at ${HEAD_SHA:0:7}; skipping comment."
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
 

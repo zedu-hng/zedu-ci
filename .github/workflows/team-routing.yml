@@ -43,6 +43,14 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
+          # Reviewers' own PRs need no lead (Lead approval waives them too). A failed lookup routes anyway.
+          perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission || echo unknown)
+          case "$perm" in
+            admin|maintain|write)
+              echo "Author $AUTHOR is a reviewer ($perm); no lead review needed."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
           gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
           ruby -ryaml -e '
             cfg = YAML.load_file("teams.yml") || {}
