@@ -61,8 +61,8 @@ on dev yet). Then:
 - the fork's build jobs are named `<target> · <backend host>`, and Fork build fails when that host
   doesn't match the PR description (the line changed after the build), until the fork rebuilds.
 
-`.env` is written from `build/<repo>.env`, read from `main` at build time, with `{{backend}}` and
-`{{client}}` filled in. Public values only: anything in `.env` ships inside the app. Contributor forks
+`.env` is written from `build/<repo>.env` at the same zedu-ci commit as the workflow, with
+`{{backend}}` and `{{client}}` filled in. Public values only: anything in `.env` ships inside the app. Contributor forks
 need no `APP_ENV_FILE` or other setup.
 
 ## teams.yml

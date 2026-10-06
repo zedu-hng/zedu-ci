@@ -1,0 +1,7 @@
+# actionlint 1.7.12 doesn't know the job context's workflow identity properties yet
+# (job.workflow_sha, job.workflow_repository; documented in GitHub's contexts reference).
+# Remove once actionlint ships them.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'property "workflow_(sha|repository|ref|file_path)" is not defined in object type'

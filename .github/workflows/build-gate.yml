@@ -7,8 +7,8 @@ name: Build gate
 # Decides whether the fork builds (only when the branch has an open PR into the review repo) and
 # which backend it talks to: `default_backend`, or the host on the PR body's
 # `Backend URL: https://api.<team>.groups.zedu.chat` line. Writes the .env from zedu-ci's
-# `env_template` (public values only; read from zedu-ci's main) with {{backend}} and {{client}}
-# filled in, base64-encoded for the build jobs.
+# `env_template` (public values only), read at this workflow's own commit (job.workflow_sha), with
+# {{backend}} and {{client}} filled in, base64-encoded for the build jobs.
 
 on:
   workflow_call:
@@ -48,7 +48,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_REPO: ${{ vars.REVIEW_REPO || format('zedu-hng/{0}', github.event.repository.name) }}
-          CI_REPO: zedu-hng/zedu-ci
+          CI_REPO: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
           OWNER: ${{ github.repository_owner }}
           BRANCH: ${{ github.ref_name }}
           DEFAULT_BACKEND: ${{ inputs.default_backend }}
@@ -86,7 +87,7 @@ jobs:
           client=${backend#api.}
           echo "Backend: $backend (web client: $client)"
 
-          template=$(gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/$TEMPLATE?ref=main")
+          template=$(gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/$TEMPLATE?ref=$CI_SHA")
           env_file=$(grep -vE '^[[:space:]]*(#|$)' <<< "$template" | sed -e "s/{{backend}}/$backend/g" -e "s/{{client}}/$client/g")
           {
             echo "build=true"

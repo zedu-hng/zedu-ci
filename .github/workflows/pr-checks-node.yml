@@ -49,7 +49,7 @@ jobs:
       - name: Use the base branch's check scripts
         run: |
           git fetch -q --no-tags origin "$BASE_REF"
-          for p in .github/scripts .github/pr-review.config.json .github/malware-scan.config.json; do
+          for p in .github/scripts .github/pr-review.config.json .github/malware-scan.config.json .gitleaks.toml; do
             if git cat-file -e "FETCH_HEAD:$p" 2>/dev/null; then
               git checkout FETCH_HEAD -- "$p"
             else
@@ -70,7 +70,12 @@ jobs:
           GITLEAKS_VERSION="8.24.2"
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP" gitleaks
-          "$RUNNER_TEMP/gitleaks" detect --source . --no-git --config .gitleaks.toml --redact --no-banner
+          # The final tree, then every commit in the PR: a secret added and deleted again within the PR
+          # is still in its history. Both scans run; either finding fails the check.
+          status=0
+          "$RUNNER_TEMP/gitleaks" detect --source . --no-git --config .gitleaks.toml --redact --no-banner || status=1
+          "$RUNNER_TEMP/gitleaks" detect --source . --log-opts "$BASE_SHA..$SHA" --config .gitleaks.toml --redact --no-banner || status=1
+          exit "$status"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

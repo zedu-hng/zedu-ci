@@ -8,7 +8,7 @@ name: PR build (Flutter)
 #
 # Backend: every build talks to our dev backend (`default_backend`), or to the host on the PR body's
 # `Backend URL: https://api.<team>.groups.zedu.chat` line. .env is written from zedu-ci's
-# `env_template` (public values only; read from zedu-ci's main) with {{backend}} and {{client}}
+# `env_template` (public values only; read at this zedu-ci commit) with {{backend}} and {{client}}
 # filled in. Build job names end in " · <backend host>": the relay compares that with the PR body.
 #
 # Caller: .github/workflows/pr-build.yml named "PR build", on push and workflow_dispatch, with a

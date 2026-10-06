@@ -91,6 +91,18 @@ jobs:
         continue-on-error: true
         run: flutter test
 
+      # Trivy reads ignore files from the scanned tree, so a PR could silence a finding with one.
+      # Only the base branch's copies count.
+      - name: Use the base branch's Trivy ignores
+        if: steps.install.outcome == 'success'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch -q --no-tags --depth=1 origin "$BASE_REF"
+          for f in .trivyignore .trivyignore.yaml trivy.yaml; do
+            if git cat-file -e "FETCH_HEAD:$f" 2>/dev/null; then git show "FETCH_HEAD:$f" > "$f"; else rm -f "$f"; fi
+          done
+
       - name: Trivy
         id: trivy
         if: steps.install.outcome == 'success'
