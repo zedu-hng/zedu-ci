@@ -1,0 +1,56 @@
+name: Lead approval relay
+
+# Reusable. Re-checks Lead approved right after a review (the caller repo's lead-approval-review.yml,
+# a trigger-only workflow) by dispatching the caller's lead-approval.yml for that PR. Trusted: runs
+# from the default branch with the base repo's token and never checks out PR code. Lead approval's
+# scheduled sweep remains as a fallback.
+#
+# Caller: workflow_run on "Lead approval review" (completed).
+# Caller permissions: actions: write, pull-requests: read.
+
+on:
+  workflow_call:
+
+permissions:
+  actions: write
+  pull-requests: read
+
+jobs:
+  relay:
+    name: Re-check lead approval
+    if: github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+      RUN_PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Dispatch Lead approval for the reviewed PR
+        run: |
+          # Same-repo runs list their PR. Fork runs don't, so match open PRs by commit. A review run's
+          # commit may be the PR's head or its test-merge commit (refs/pull/N/merge), so match either.
+          # When several PRs match, re-check them all rather than guess which one was reviewed (a
+          # re-check is harmless, and the reviewed PR is always among them).
+          prs=$(jq -r '.[] | "\(.number) \(.base.ref)"' <<< "$RUN_PRS")
+          # Fork runs: the run name ends in "#<PR>" (see lead-approval-review.yml). A fork could edit
+          # its copy of that name, but a wrong number only re-checks another open PR, which is harmless.
+          if [ -z "$prs" ] && [[ "$RUN_TITLE" =~ \#([0-9]+)$ ]]; then
+            prs=$(gh api "repos/$REPO/pulls/${BASH_REMATCH[1]}" --jq 'select(.state == "open") | "\(.number) \(.base.ref)"' || true)
+          fi
+          if [ -z "$prs" ]; then
+            prs=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+              | jq -rs --arg s "$HEAD_SHA" 'flatten | map(select(.head.sha == $s or .merge_commit_sha == $s)) | .[] | "\(.number) \(.base.ref)"')
+          fi
+          if [ -z "$prs" ]; then echo "No open PR has head $HEAD_SHA; nothing to re-check."; exit 0; fi
+          while read -r number base; do
+            case "$base" in
+              dev|central-staging)
+                gh workflow run lead-approval.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" -f pr="$number" -f base_ref="$base"
+                echo "Re-checking Lead approved for PR #$number." ;;
+              *) echo "PR #$number targets $base; Lead approval doesn't apply." ;;
+            esac
+          done <<< "$prs"

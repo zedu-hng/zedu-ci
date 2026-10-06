@@ -1,0 +1,114 @@
+name: PR Review comment
+
+# Reusable. Trusted companion to "PR checks" and "PR scans". Those run PR code with a read-only token, so they
+# can't comment or set statuses on fork PRs. When one finishes, this downloads its artifacts and,
+# with the base repo's token and without checking out PR code:
+# - posts the review bot's report as a sticky PR comment (PR checks only);
+# - posts one commit status per check (ESLint, TypeScript, Build, Semgrep, ...).
+# The artifacts come from PR code, so a fork could forge them; that is no weaker than the run's own
+# pass/fail, which the fork's code also decides. Contexts are allowlisted, states limited to
+# success/failure, and statuses go on the run's head commit from the event, not from the artifact.
+
+# Caller: workflow_run on "PR checks" and "PR scans" (completed).
+# Caller permissions: contents: read, actions: read, pull-requests: write, statuses: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  statuses: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  RUN_ID: ${{ github.event.workflow_run.id }}
+  HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+  HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+  HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+  RUN_URL: ${{ github.event.workflow_run.html_url }}
+  WORKFLOW: ${{ github.event.workflow_run.name }}
+
+jobs:
+  comment:
+    name: Post review comment and statuses
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Preview-only runs (a preview label or Backend URL edit) upload no results; nothing to post.
+      - name: Download check results
+        id: results
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pr-checks-results
+          path: ${{ runner.temp }}/results
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Post check statuses
+        if: steps.results.outcome == 'success'
+        env:
+          FILE: ${{ runner.temp }}/results/pr-checks-results.json
+        run: |
+          [ -s "$FILE" ] || { echo "No results file; nothing to post."; exit 0; }
+          # Every context any repo's PR checks or PR scans post; a name outside this list is dropped.
+          allowed='["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Jest","PR review","Build","Semgrep","ClamAV","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"]'
+          current=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" --jq '.statuses[] | "\(.context)|\(.state)|\(.description)"' || true)
+          jq -r --argjson ok "$allowed" '
+            .checks[]?
+            | select((.context | type) == "string" and (.context as $c | $ok | index($c)))
+            | [.context, (if .state == "success" then "success" else "failure" end),
+               ((.description // "") | tostring | gsub("[^A-Za-z0-9 .,:;()/_-]"; "") | .[0:120])]
+            | @tsv' "$FILE" |
+          while IFS=$'\t' read -r context state desc; do
+            grep -qxF "$context|$state|$desc" <<< "$current" && continue
+            gh api "repos/$REPO/statuses/$HEAD_SHA" -f context="$context" -f state="$state" \
+              -f description="$desc" -f target_url="$RUN_URL" >/dev/null \
+              && echo "$context: $state" || echo "::warning::Couldn't post the $context status."
+          done
+
+      - name: Resolve PR number
+        id: pr
+        if: env.WORKFLOW == 'PR checks'
+        run: |
+          number=$(gh api -X GET "repos/$REPO/pulls" -f state=open \
+            -f head="${HEAD_REPO%%/*}:$HEAD_BRANCH" --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            echo "::notice::No open PR for $HEAD_REPO:$HEAD_BRANCH; skipping comment."
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Download review report
+        id: download
+        if: steps.pr.outputs.number != ''
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pr-review-report
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Check report
+        id: report
+        if: steps.pr.outputs.number != '' && steps.download.outcome == 'success'
+        run: |
+          if [ -s review-report.md ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The review run produced no report; skipping comment."
+          fi
+
+      - name: Post PR comment
+        if: steps.pr.outputs.number != '' && steps.report.outputs.found == 'true'
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        with:
+          header: pr-review-bot
+          number: ${{ steps.pr.outputs.number }}
+          path: review-report.md

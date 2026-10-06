@@ -1,0 +1,80 @@
+name: Team routing
+
+# Reusable. Requests review from a contributor PR's team lead(s), read from zedu-ci's teams.yml, so a
+# PR can't change who reviews it. Reviewers are not assigned here: once a PR is lead-approved and its
+# checks pass, Reviewer notify mentions @zedu-hng/reviewers and any reviewer can claim it.
+#
+# Caller: pull_request_target (opened, ready_for_review, reopened).
+# Caller permissions: contents: read, pull-requests: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  CI_REPO: zedu-hng/zedu-ci
+  PR: ${{ github.event.pull_request.number }}
+  AUTHOR: ${{ github.event.pull_request.user.login }}
+  HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
+  HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+
+jobs:
+  route:
+    name: Route to team lead
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve team
+        id: team
+        run: |
+          # Only route contributor PRs from forks; same-repo branches are reviewers'/bots' own work.
+          if [ "$HEAD_REPO" = "$REPO" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$AUTHOR" in
+            *\[bot\]|github-actions)
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
+          gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
+          ruby -ryaml -e '
+            cfg = YAML.load_file("teams.yml") || {}
+            owner = ENV.fetch("HEAD_OWNER").downcase
+            name, team = (cfg["teams"] || {}).find { |k, _| k.to_s.downcase == owner }
+            if team
+              puts "found=true"
+              puts "team=#{name}"
+              puts "leads=#{Array(team["leads"]).join(",")}"
+            else
+              puts "found=false"
+            end
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Request lead review
+        if: steps.team.outputs.skip != 'true'
+        env:
+          FOUND: ${{ steps.team.outputs.found }}
+          TEAM: ${{ steps.team.outputs.team }}
+          LEADS: ${{ steps.team.outputs.leads }}
+        run: |
+          if [ "$FOUND" != "true" ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "Team routing: fork \`$HEAD_OWNER\` isn't a registered team in [\`teams.yml\`](https://github.com/$CI_REPO/blob/main/teams.yml). Open the PR from your team's fork, or ask a maintainer to add the team."
+            exit 0
+          fi
+          leads=$(printf '%s' "$LEADS" | tr ',' '\n' | grep -v '^$' || true)
+          if [ -z "$leads" ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "Team routing: **$TEAM** has no leads in [\`teams.yml\`](https://github.com/$CI_REPO/blob/main/teams.yml). Add at least one lead so this PR can be reviewed."
+            exit 0
+          fi
+          printf '%s\n' "$leads" | while read -r handle; do
+            gh pr edit "$PR" --repo "$REPO" --add-reviewer "$handle" || gh pr comment "$PR" --repo "$REPO" --body "Team routing: couldn't request review from @$handle (not a collaborator yet?)."
+          done
+          # shellcheck disable=SC2086 # one @mention per lead
+          gh pr comment "$PR" --repo "$REPO" --body "Team routing: **$TEAM**: requested review from the team lead(s): $(printf '@%s ' $leads)"

@@ -1,0 +1,302 @@
+name: PR rules
+
+# Reusable. Callers: each repo's .github/workflows/pr-rules.yml (pull_request_target, so it runs the
+# base repo's caller and this pinned file, never the PR's). Never checks out PR code; all data comes
+# from the GitHub API, so a PR can't edit these rules to pass itself.
+#
+# - Branch name: <type>/<ticket-id>-<short-description>. Reviewers (write access) are exempt.
+# - Single author: one person per PR. Co-authored-by trailers are fine. Reviewers are exempt.
+# - Protected files: the caller's `protected` paths, plus secret-like files in every repo (.env*
+#   except .env.example, keystores, certificates and keys, provisioning profiles, credential JSON).
+#   Blocked unless a reviewer adds the `config-change-approved` label. A rename counts its old path.
+# - Size: at most ~`size_limit` changed lines (`size_exclude` paths don't count). Reviewers can apply
+#   the `size-override` label to allow a larger PR.
+# - PR title: <type>(<ticket-id>): <summary>, with the ticket matching the branch.
+# - PR template: every checkbox in the caller's `template` (read from the base branch) must be ticked.
+# Sync and promotion PRs (label `sync`, head dev/central-staging or upstream main/staging) are
+# waived here. Hotfix PRs (label `hotfix`) skip only size; branch/author/protected still run.
+#
+# One job, and each rule reports as its own commit status, so an event only re-runs the rules it can
+# change: a push runs all of them, a title or body edit runs PR title or PR template, and a label
+# event runs only for the labels a rule reads. Rules that don't run keep their status for the commit.
+#
+# Caller permissions: contents: read, pull-requests: read, statuses: write.
+
+on:
+  workflow_call:
+    inputs:
+      protected:
+        description: Extended regex of protected paths (matched against each changed path)
+        type: string
+        required: true
+      size_exclude:
+        description: Extended regex of paths that don't count toward Size (lockfiles, generated code)
+        type: string
+        default: '(^|/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$|\.tsbuildinfo$'
+      size_limit:
+        description: Changed-line limit for Size
+        type: number
+        default: 400
+      template:
+        description: Path of the PR template on the base branch
+        type: string
+        default: .github/pull_request_template.md
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+  HEAD_REF: ${{ github.event.pull_request.head.ref }}
+  AUTHOR: ${{ github.event.pull_request.user.login }}
+  LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+
+jobs:
+  rules:
+    name: PR rules
+    # Skipped events take no runner: edits that touch neither title, body nor base, and labels no
+    # rule reads.
+    if: >-
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
+      (github.event.action == 'edited' &&
+        (github.event.changes.title != null || github.event.changes.body != null || github.event.changes.base != null)) ||
+      (contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) &&
+        contains(fromJSON('["config-change-approved", "size-override", "hotfix", "sync"]'), github.event.label.name))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTION: ${{ github.event.action }}
+      LABEL: ${{ github.event.label.name }}
+      TITLE_CHANGED: ${{ github.event.changes.title != null }}
+      BODY_CHANGED: ${{ github.event.changes.body != null }}
+      BASE_CHANGED: ${{ github.event.changes.base != null }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      TITLE: ${{ github.event.pull_request.title }}
+      BODY: ${{ github.event.pull_request.body }}
+      PROTECTED: ${{ inputs.protected }}
+      SIZE_EXCLUDE: ${{ inputs.size_exclude }}
+      SIZE_LIMIT: ${{ inputs.size_limit }}
+      TEMPLATE: ${{ inputs.template }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check rules
+        run: |
+          set -o pipefail
+          labels=",${LABELS},"
+          has() { case "$labels" in *,"$1",*) return 0 ;; esac; return 1; }
+
+          # Which rules this event can change.
+          run_all=false
+          declare -A want=()
+          case "$ACTION" in
+            opened|synchronize|reopened) run_all=true ;;
+            edited)
+              [ "$BASE_CHANGED" = true ] && run_all=true
+              [ "$TITLE_CHANGED" = true ] && want[title]=1
+              [ "$BODY_CHANGED" = true ] && want[template]=1 ;;
+            labeled|unlabeled)
+              case "$LABEL" in
+                config-change-approved) want[protected]=1 ;;
+                size-override|hotfix) want[size]=1 ;;
+                sync) run_all=true ;;
+              esac ;;
+          esac
+          wants() { [ "$run_all" = true ] || [ -n "${want[$1]:-}" ]; }
+
+          # Classify. API errors fail loudly: a refused call must never read as data.
+          internal=false; sync=false; reviewer=false
+          case "$AUTHOR" in
+            dependabot\[bot\]|renovate\[bot\]|github-actions\[bot\])
+              reviewer=true
+              echo "Author $AUTHOR is a bot; branch-name and single-author checks are waived." ;;
+            *)
+              upstream=$(gh api "repos/$REPO" --jq '.parent.full_name // ""') \
+                || { echo "::error::Couldn't read the repo (API error). Re-run this job."; exit 1; }
+              if { [ "$HEAD_REPO" = "$REPO" ] || [ "$HEAD_REPO" = "$upstream" ]; } \
+                 && { [ "$HEAD_REF" = dev ] || [ "$HEAD_REF" = central-staging ]; }; then
+                internal=true
+              fi
+              head_ok=false
+              case "$HEAD_REF" in dev|central-staging|main|staging) head_ok=true ;; esac
+              if has sync && [ "$head_ok" = true ] \
+                 && { [ "$HEAD_REPO" = "$REPO" ] || [ "$HEAD_REPO" = "$upstream" ]; }; then
+                sync=true
+              fi
+              if ! perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission); then
+                echo "::warning::Permission lookup failed for $AUTHOR; retrying once."
+                if ! perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission); then
+                  echo "::error::Permission lookup failed twice for $AUTHOR; treating the author as a non-reviewer."
+                  perm=none
+                fi
+              fi
+              case "$perm" in admin|maintain|write) reviewer=true ;; esac
+              echo "Author $AUTHOR permission: $perm" ;;
+          esac
+          if [ "$internal" = true ] && [ "$sync" != true ]; then
+            echo "Same-repo promotion PR; rules don't apply."
+            exit 0
+          fi
+
+          # Post each rule as a commit status, only when it changes.
+          current=$(gh api "repos/$REPO/commits/$SHA/status" --jq '.statuses[] | "\(.context)|\(.state)|\(.description)"' || true)
+          failed=0; post_failed=0
+          report() { # context state description
+            local desc=${3:0:140}
+            [ "$2" = failure ] && failed=$((failed + 1))
+            if grep -qxF "$1|$2|$desc" <<< "$current"; then return 0; fi
+            if ! gh api "repos/$REPO/statuses/$SHA" -f context="$1" -f state="$2" -f description="$desc" -f target_url="$RUN_URL" >/dev/null; then
+              echo "::error::Couldn't post the $1 status (API error). Re-run this job."
+              post_failed=1
+            fi
+          }
+          waived() { report "$1" success "Sync PR; waived"; }
+
+          if wants branch; then
+            pattern='^(feat|fix|hotfix|test|docs|refactor|chore|perf|security)/([A-Za-z]+-)?[[:digit:]]+-[a-z[:digit:]][a-z[:digit:]-]*$'
+            if [ "$sync" = true ]; then waived "Branch name"
+            elif [[ "$HEAD_REF" =~ $pattern ]]; then report "Branch name" success "OK: $HEAD_REF"
+            elif [ "$reviewer" = true ]; then report "Branch name" success "Not the ticket format; allowed for a reviewer"
+            else
+              echo "::error::Branch '$HEAD_REF' doesn't match <type>/<ticket-id>-<short-description>, e.g. fix/245-login-redirect. Open the PR from a correctly named ticket branch (see CONTRIBUTING.md)."
+              report "Branch name" failure "Branch must be <type>/<ticket-id>-<short-description>, e.g. fix/245-login-redirect"
+            fi
+          fi
+
+          if wants author; then
+            if [ "$sync" = true ]; then waived "Single author"
+            elif ! authors=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits" \
+                   --jq '.[] | (.author.login // .commit.author.email)' | sort -u); then
+              echo "::error::Couldn't read the PR's commits (API error). Re-run this job."
+              report "Single author" failure "Couldn't read commits (API error); re-run PR rules"
+            else
+              # GitHub login when the commit email is linked to an account, otherwise the author email.
+              count=$(grep -c . <<< "$authors" || true)
+              echo "Commit authors: $(tr '\n' ' ' <<< "$authors")"
+              if [ "$count" -le 1 ]; then report "Single author" success "OK: single author"
+              elif [ "$reviewer" = true ]; then report "Single author" success "$count authors; allowed for a reviewer"
+              else
+                echo "::error::This PR has commits from $count authors. Each member opens their own PR from their own ticket branch; don't combine teammates' work. Credit collaborators with Co-authored-by trailers instead."
+                report "Single author" failure "Commits from $count authors. One person per PR; credit others with Co-authored-by"
+              fi
+            fi
+          fi
+
+          # Protected files and Size share one file list: "<changes>\t<status>\t<path>". A rename also
+          # lists its old path with status "previous", so moving a protected file away still counts.
+          files=""
+          if { wants protected || wants size; } && [ "$sync" != true ]; then
+            files=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
+              --jq '.[] | "\(.additions + .deletions)\t\(.status)\t\(.filename)", (select(.status == "renamed") | "0\tprevious\t\(.previous_filename)")') \
+              || files=ERROR
+            # GitHub lists at most 3,000 files per PR, so a list that long may be missing paths.
+            if [ "$files" != ERROR ] && [ "$(cut -f2 <<< "$files" | grep -vc '^previous$')" -ge 3000 ]; then
+              echo "::error::This PR changes 3,000+ files, more than GitHub lists, so its files can't all be checked. Split it."
+              files=TOO_MANY
+            fi
+          fi
+
+          if wants protected; then
+            approved=false
+            { has config-change-approved || [ "$AUTHOR" = "dependabot[bot]" ]; } && approved=true
+            # Adding or editing one is blocked; deleting one is fine. .env.example is a template.
+            secret='(^|/)\.env|\.(keystore|jks|p[[:digit:]]+|pfx|pem|mobileprovision)$|(^|/)(credentials|secrets|service-account[^/]*)\.json$'
+            if [ "$sync" = true ]; then waived "Protected files"
+            elif [ "$files" = TOO_MANY ]; then report "Protected files" failure "3,000+ files: more than GitHub lists, so not all can be checked. Split the PR"
+            elif [ "$files" = ERROR ]; then
+              echo "::error::Couldn't read the PR's files (API error). Re-run this job."
+              report "Protected files" failure "Couldn't read files (API error); re-run PR rules"
+            else
+              hits=$( {
+                cut -f3 <<< "$files" | grep -E "$PROTECTED" || true
+                awk -F'\t' '$2 != "removed" { print $3 }' <<< "$files" | grep -Ei "$secret" | grep -Ev '(^|/)\.env\.example$' || true
+              } | grep . | sort -u || true)
+              if [ -z "$hits" ]; then report "Protected files" success "OK: no protected files changed"
+              elif [ "$approved" = true ]; then
+                echo "::notice::Protected files changed, approved by the config-change-approved label:"; echo "$hits"
+                report "Protected files" success "Protected files changed; approved by config-change-approved"
+              else
+                echo "::error::This PR changes protected files. Revert them, or agree the change with the reviewers first (they add the config-change-approved label):"
+                while read -r f; do echo "  - $f"; done <<< "$hits"
+                report "Protected files" failure "Changes protected files: $(paste -sd' ' - <<< "$hits")"
+              fi
+            fi
+          fi
+
+          if wants size; then
+            if [ "$sync" = true ]; then waived "Size"
+            elif has hotfix; then report "Size" success "Hotfix PR; size check waived"
+            elif has size-override; then report "Size" success "size-override label applied"
+            elif [ "$files" = TOO_MANY ]; then report "Size" failure "3,000+ files changed. Split the PR"
+            elif [ "$files" = ERROR ]; then
+              echo "::error::Couldn't read the PR's files (API error). Re-run this job."
+              report "Size" failure "Couldn't read files (API error); re-run PR rules"
+            else
+              # ENVIRON, not -v: awk would rewrite the regex's backslash escapes.
+              count=$(awk -F'\t' '$2 != "previous" && $3 !~ ENVIRON["SIZE_EXCLUDE"] { s += $1 } END { print s + 0 }' <<< "$files")
+              echo "Changed lines (excluding $SIZE_EXCLUDE): $count (limit ~$SIZE_LIMIT)"
+              if [ "$count" -gt "$SIZE_LIMIT" ]; then
+                echo "::error::This PR changes $count lines, over the ~$SIZE_LIMIT limit. Split it into smaller PRs, or ask a reviewer for the size-override label."
+                report "Size" failure "$count changed lines, over ~$SIZE_LIMIT. Split it, or ask a reviewer for size-override"
+              else
+                report "Size" success "$count changed lines (limit ~$SIZE_LIMIT)"
+              fi
+            fi
+          fi
+
+          if wants title; then
+            bnum=$(printf '%s' "$HEAD_REF" | grep -oE '[0-9]+' | head -1 || true)
+            if [ "$sync" = true ]; then waived "PR title"
+            elif ! [[ "$TITLE" =~ ^[a-z]+\(([A-Za-z]*-)?([0-9]+)\):[[:space:]]+(.+)$ ]]; then
+              if [ "$reviewer" = true ]; then report "PR title" success "Not <type>(<ticket-id>): <summary>; allowed for a reviewer"
+              else
+                echo "::error::PR title must be <type>(<ticket-id>): <summary>, e.g. fix(CHAT-142): clear the typing indicator."
+                report "PR title" failure "Title must be <type>(<ticket-id>): <summary>, e.g. fix(CHAT-142): clear the typing indicator"
+              fi
+            else
+              tnum="${BASH_REMATCH[2]}"
+              if [ -z "$bnum" ]; then report "PR title" success "OK (branch has no ticket number to match)"
+              elif [ "$bnum" = "$tnum" ]; then report "PR title" success "OK: ticket $tnum matches the branch"
+              elif [ "$reviewer" = true ]; then report "PR title" success "Ticket $tnum doesn't match branch $bnum; allowed for a reviewer"
+              else
+                echo "::error::PR title ticket '$tnum' doesn't match the branch ticket '$bnum'. Use the same ticket as your branch name."
+                report "PR title" failure "Title ticket $tnum doesn't match branch ticket $bnum"
+              fi
+            fi
+          fi
+
+          if wants template; then
+            if [ "$sync" = true ]; then waived "PR template"
+            elif [ "$reviewer" = true ]; then report "PR template" success "Reviewer PR; template check waived"
+            elif ! template=$(gh api "repos/$REPO/contents/$TEMPLATE?ref=$BASE_REF" --jq .content | base64 -d); then
+              echo "::error::Couldn't read the PR template (API error). Re-run this job."
+              report "PR template" failure "Couldn't read the template (API error); re-run PR rules"
+            else
+              norm() { tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' '; }
+              body_norm=$(printf '%s' "$BODY" | norm)
+              missing=""; n=0
+              while IFS= read -r line; do
+                label=$(printf '%s' "$line" | sed -E 's/^- \[[ xX]\] //')
+                label_norm=$(printf '%s' "$label" | norm)
+                [ -n "$label_norm" ] || continue
+                if ! printf '%s\n' "$body_norm" | grep -qF "[x] $label_norm"; then
+                  missing="${missing}  - ${label}"$'\n'; n=$((n + 1))
+                fi
+              done < <(printf '%s\n' "$template" | grep -E '^- \[ \] ')
+              if [ -n "$missing" ]; then
+                echo "::error::Tick every checkbox in the PR template ($TEMPLATE)."
+                echo "Unticked:"; printf '%s' "$missing"
+                report "PR template" failure "$n template checkbox(es) unticked; tick every one"
+              else
+                report "PR template" success "OK: all template checkboxes ticked"
+              fi
+            fi
+          fi
+
+          [ "$failed" -eq 0 ] || { echo "$failed rule(s) failed; see the statuses on the PR."; exit 1; }
+          [ "$post_failed" -eq 0 ] || { echo "A rule status couldn't be posted; re-run this job."; exit 1; }
