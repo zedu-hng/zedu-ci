@@ -23,7 +23,8 @@ name: Fork build
 # Caller: .github/workflows/fork-build.yml named "Fork build", with
 #   run-name: "Fork build #<PR>" (the sweep reads it), on pull_request_target (opened, synchronize,
 #   reopened, ready_for_review, edited), issue_comment (created), workflow_dispatch with inputs `pr`
-#   and `attempt`, and schedule. The per-PR concurrency group lives in the caller.
+#   and `attempt`, and schedule. The per-PR concurrency group lives in the caller, and an edit joins
+#   it only under the same Backend URL condition as the relay job below.
 # Caller permissions: actions: write, contents: read, pull-requests: write, statuses: write.
 # The caller repo needs the fork-build-wait environment (3-minute wait timer, default branch only).
 
@@ -113,15 +114,18 @@ jobs:
   relay:
     name: Relay fork build
     needs: delay
-    # A body edit only matters when the old or new body mentions a Backend URL (contains() ignores
-    # case); template ticks and other edits take no runner.
+    # A body edit only matters when the old or new body has a Backend URL value line (contains()
+    # ignores case). "backend url:" followed by "https" is a value line; the template's own comment
+    # quotes the label, so it doesn't match. Template ticks and other edits take no runner.
     if: >-
       always() && needs.delay.result != 'failure' && needs.delay.result != 'cancelled' &&
       ((github.event_name == 'pull_request_target' &&
         (github.event.action != 'edited' ||
          (github.event.changes.body != null &&
-          (contains(github.event.pull_request.body, 'backend url') ||
-           contains(github.event.changes.body.from, 'backend url'))))) ||
+          (contains(github.event.pull_request.body, 'backend url: https') ||
+           contains(github.event.pull_request.body, 'backend url:https') ||
+           contains(github.event.changes.body.from, 'backend url: https') ||
+           contains(github.event.changes.body.from, 'backend url:https'))))) ||
        github.event_name == 'workflow_dispatch' ||
        (github.event.issue.pull_request &&
         (github.event.comment.body == '/fork-build' || startsWith(github.event.comment.body, '/fork-build '))))
