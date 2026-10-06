@@ -7,9 +7,14 @@ name: Lead approval
 # lead-approval-relay.yml re-dispatches this right after a review, and a scheduled sweep re-dispatches
 # it for PRs that aren't green yet (both trusted, write-capable paths).
 #
+# Green without a lead review: sync/hotfix PRs, same-repo, bot and reviewer PRs, the `lead-verified`
+# label (a lead approved somewhere GitHub can't see), and a team's only lead opening their own PR
+# (Zedu review still applies). A lead's own PR otherwise needs another lead.
+#
 # Caller: .github/workflows/lead-approval.yml (that exact name: the sweep and relay dispatch it), on
-# pull_request_target (opened, synchronize, reopened, ready_for_review), workflow_dispatch with
-# inputs `pr` and `base_ref`, and schedule.
+# pull_request_target (opened, synchronize, reopened, ready_for_review, labeled, unlabeled),
+# workflow_dispatch with inputs `pr` and `base_ref`, and schedule. Its per-PR concurrency group must
+# leave out labels this doesn't read, or adding one would cancel a check in progress.
 # Caller permissions: actions: write, contents: read, pull-requests: read, statuses: write.
 
 on:
@@ -79,7 +84,11 @@ jobs:
 
   approval:
     name: Check lead approval
-    if: github.event_name != 'schedule'
+    # Label events only for the labels this reads.
+    if: >-
+      github.event_name != 'schedule' &&
+      (!contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) ||
+       contains(fromJSON('["lead-verified", "sync", "hotfix"]'), github.event.label.name))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -129,21 +138,10 @@ jobs:
 
       - name: Resolve leads
         id: leads
-        if: steps.pr.outputs.number != ''
+        if: steps.pr.outputs.number != '' && steps.pr.outputs.head_owner != ''
         env:
-          AUTHOR: ${{ steps.pr.outputs.author }}
-          HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
           HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
         run: |
-          if [ "$HEAD_REPO" = "$REPO" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          case "$AUTHOR" in
-            *\[bot\]|github-actions)
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0 ;;
-          esac
           gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
           ruby -ryaml -e '
             cfg = YAML.load_file("teams.yml") || {}
@@ -162,44 +160,68 @@ jobs:
         env:
           PR: ${{ steps.pr.outputs.number }}
           SHA: ${{ steps.pr.outputs.sha }}
-          SKIP: ${{ steps.leads.outputs.skip }}
+          AUTHOR: ${{ steps.pr.outputs.author }}
+          HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
+          HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
           MAPPED: ${{ steps.leads.outputs.mapped }}
           LEADS: ${{ steps.leads.outputs.leads }}
-          HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
           LABELS: ${{ steps.pr.outputs.labels }}
         run: |
-          setstatus() { gh api "repos/$REPO/statuses/$SHA" -f state="$1" -f context="$CONTEXT" -f description="$2" >/dev/null; }
-          case ",$LABELS," in
-            *,sync,*|*,hotfix,*)
-              setstatus success "Sync/hotfix PR; lead approval not enforced"
-              exit 0 ;;
-          esac
-          if [ "$SKIP" = "true" ]; then
-            setstatus success "Same-repo or bot PR; lead approval not enforced"
-            exit 0
-          fi
-          if [ "$MAPPED" != "true" ]; then
-            setstatus failure "Fork '$HEAD_OWNER' isn't a registered team; a maintainer must add it to zedu-ci teams.yml"
-            exit 0
-          fi
-          if [ -z "$LEADS" ]; then
-            setstatus failure "Team '$HEAD_OWNER' has no leads in zedu-ci teams.yml"
-            exit 0
-          fi
-          # The effective review state per person is their latest non-comment review, across all pages.
-          # gh can't combine --slurp with --jq (every run failed), so the pages are piped into jq.
-          # pipefail: an API failure must fail the step, not read as "no approvals".
           set -o pipefail
-          approved=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" \
-            | jq -r 'flatten | map(select(.state != "COMMENTED" and .state != "PENDING")) | group_by(.user.login | ascii_downcase) | map(.[-1]) | map(select(.state == "APPROVED")) | .[].user.login')
-          leads_list=$(printf '%s\n' "$LEADS" | tr ',' '\n' | grep -v '^$')
-          # Logins are case-insensitive on GitHub; teams.yml is typed by hand.
-          hit=$(printf '%s\n' "$approved" | grep -Fxif <(printf '%s\n' "$leads_list") | head -1 || true)
-          # shellcheck disable=SC2086 # one @login per word
-          printf 'Leads: %s\nApprovals: %s\n' "$(printf '%s ' $leads_list)" "$(printf '%s ' $approved)"
-          if [ -n "$hit" ]; then
-            setstatus success "Approved by team lead @$hit"
-          else
-            # shellcheck disable=SC2086 # one @login per word
-            setstatus failure "Waiting for an approving review from a team lead: $(printf '@%s ' $leads_list)"
-          fi
+          # "state|description" for this PR. API failures fail the step: a refused call must never
+          # read as "no approvals".
+          decide() {
+            case ",$LABELS," in
+              *,sync,*|*,hotfix,*) echo "success|Sync/hotfix PR; lead approval not enforced"; return ;;
+            esac
+            if [ "$HEAD_REPO" = "$REPO" ]; then echo "success|Same-repo PR; lead approval not enforced"; return; fi
+            case "$AUTHOR" in
+              *\[bot\]|github-actions) echo "success|Bot PR; lead approval not enforced"; return ;;
+            esac
+            # Reviewers (write access) open setup PRs from personal forks.
+            local perm
+            perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission) || return 1
+            case "$perm" in
+              admin|maintain|write) echo "success|Reviewer PR; lead approval not enforced"; return ;;
+            esac
+            case ",$LABELS," in
+              *,lead-verified,*) echo "success|Lead approval verified by a reviewer (lead-verified label)"; return ;;
+            esac
+            if [ -z "$HEAD_OWNER" ]; then echo "failure|Fork was deleted; reopen this PR from your team's org fork"; return; fi
+            if [ "$MAPPED" != true ]; then
+              if [ "${HEAD_OWNER,,}" = "${AUTHOR,,}" ]; then
+                echo "failure|Personal fork. Open this PR from your team's org fork, not $HEAD_OWNER/"; return
+              fi
+              echo "failure|Fork org $HEAD_OWNER isn't registered. Ask a reviewer to add it to zedu-ci teams.yml"; return
+            fi
+            # Leads other than the author: a lead's own PR needs another lead, and a team's only lead
+            # opening their own PR is waived (Zedu review still applies).
+            local leads approved hit
+            leads=$(tr ',' '\n' <<< "$LEADS" | grep -v '^$' | grep -vixF "$AUTHOR" || true)
+            if [ -z "$leads" ]; then
+              if tr ',' '\n' <<< "$LEADS" | grep -qixF "$AUTHOR"; then
+                echo "success|Team's only lead opened this PR; Zedu review applies"; return
+              fi
+              echo "failure|Team $HEAD_OWNER has no leads in zedu-ci teams.yml"; return
+            fi
+            # The effective review state per person is their latest non-comment review, across all pages.
+            # gh can't combine --slurp with --jq, so the pages are piped into jq.
+            approved=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" \
+              | jq -r 'flatten | map(select(.state != "COMMENTED" and .state != "PENDING")) | group_by(.user.login | ascii_downcase) | map(.[-1]) | map(select(.state == "APPROVED")) | .[].user.login') || return 1
+            # Logins are case-insensitive on GitHub; teams.yml is typed by hand.
+            hit=$(grep -Fxif <(printf '%s\n' "$leads") <<< "$approved" | head -1 || true)
+            echo "Leads: $(paste -sd' ' - <<< "$leads"). Approvals: $(paste -sd' ' - <<< "$approved")" >&2
+            if [ -n "$hit" ]; then
+              echo "success|Approved by team lead @$hit"
+            else
+              echo "failure|Waiting for a team lead to approve: @$(paste -sd' ' - <<< "$leads" | sed 's/ / @/g')"
+            fi
+          }
+          result=$(decide) || { echo "::warning::API error deciding PR #$PR; leaving the status unchanged."; exit 0; }
+          state=${result%%|*}; desc=${result#*|}; desc=${desc:0:140}
+          # Write only on change: GitHub caps statuses per commit and context.
+          current=$(gh api "repos/$REPO/commits/$SHA/status" | jq -r --arg c "$CONTEXT" \
+            '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)
+          if [ "$current" = "$state|$desc" ]; then echo "PR #$PR: unchanged ($state: $desc)"; exit 0; fi
+          gh api "repos/$REPO/statuses/$SHA" -f state="$state" -f context="$CONTEXT" -f description="$desc" >/dev/null
+          echo "PR #$PR: $state: $desc"
