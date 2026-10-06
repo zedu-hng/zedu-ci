@@ -198,20 +198,23 @@ jobs:
           ' <<< "$data" >> "$GITHUB_OUTPUT"
 
           # The backend this PR's build must use: the Backend URL line of its body, or the default. The
-          # same parse runs in the fork's PR build (pr-build-*.yml).
+          # fork's build gate (build-gate.yml) runs the same parse; Lint fails if the two drift.
           sha=$(jq -r '.data.repository.pullRequest.headRefOid' <<< "$data")
-          line=$(jq -r '.data.repository.pullRequest.body // ""' <<< "$data" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
-          if [ -z "$line" ]; then
-            backend=$DEFAULT_BACKEND; state=success; desc="Uses the dev backend ($DEFAULT_BACKEND)"
-          else
+          body=$(jq -r '.data.repository.pullRequest.body // ""' <<< "$data")
+          # shared:backend-url begin
+          # The PR body's Backend URL line: backend=<api host>, "" without a line, or "invalid".
+          line=$(printf '%s\n' "$body" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
+          backend=""
+          if [ -n "$line" ]; then
             url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$line")
-            if [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then
-              backend=${BASH_REMATCH[1]}; state=failure
-              desc="Depends on backend $backend. Merge after it's on dev, then delete the Backend URL line."
-            else
-              backend=invalid; state=failure; desc="Backend URL must look like https://api.<name>.groups.zedu.chat"
-            fi
+            if [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then backend=${BASH_REMATCH[1]}; else backend=invalid; fi
           fi
+          # shared:backend-url end
+          case "$backend" in
+            "") backend=$DEFAULT_BACKEND; state=success; desc="Uses the dev backend ($DEFAULT_BACKEND)" ;;
+            invalid) state=failure; desc="Backend URL must look like https://api.<name>.groups.zedu.chat" ;;
+            *) state=failure; desc="Depends on backend $backend. Merge after it's on dev, then delete the Backend URL line." ;;
+          esac
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
           last=$(gh api "repos/$REPO/commits/$sha/status" | jq -r --arg c "$BACKEND_CONTEXT" \
             '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)

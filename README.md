@@ -46,6 +46,7 @@ callers never ship upstream.
 | `fork-build.yml` | Relays the fork's PR build as `Fork build`, posts `Backend dependency`, comments the artifacts | `pull_request_target`, `issue_comment`, `workflow_dispatch`, `schedule` |
 | `pr-build-react-native.yml` | Fork side: Android APK and iOS simulator build (zedu-mobile) | `push`, `workflow_dispatch` in the fork |
 | `pr-build-flutter.yml` | Fork side: macOS, Windows and Linux builds (zedu-desktop) | `push`, `workflow_dispatch` in the fork |
+| `build-gate.yml` | Nested in both PR builds: open-PR check, backend and `.env` | called by the two files above |
 
 Checks run Zedu's own scripts and configs from the base branch, so a PR can't loosen them. Each
 check is posted as its own commit status by `pr-review-comment.yml`.
@@ -69,6 +70,19 @@ need no `APP_ENV_FILE` or other setup.
 One entry per team, keyed by the GitHub org that owns the team's forks (the same org for all three
 repos). See the comments in the file. Add a team or change leads with a PR here.
 
+## Shared code
+
+A called workflow can only reach another file of this repo at the same commit through a nested
+reusable workflow (`uses: ./.github/workflows/...`), so whole jobs are shared that way
+(`build-gate.yml`). Composite actions and scripts would need this repo checked out at a known
+commit, which a called workflow can't name without a second copy of the SHA in every caller.
+
+Smaller pieces are copied instead, between `# shared:<name> begin` and `# shared:<name> end`
+markers: `publish-results` (the results format `pr-review-comment.yml` reads), `backend-url` (the
+build gate and the relay must parse the line the same way) and `teams-lookup`. Lint fails when the
+copies of a block differ, so change every copy in the same PR.
+
 ## Lint
 
-Every PR runs actionlint (with shellcheck) and parses the data files. CodeRabbit reviews every PR.
+Every PR runs actionlint (with shellcheck), checks the shared blocks still match and parses the data
+files. CodeRabbit reviews every PR.

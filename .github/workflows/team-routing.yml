@@ -51,10 +51,12 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
+          # shared:teams-lookup begin
+          # The fork owner's team in zedu-ci's teams.yml (main): found=true|false, team=<key>, leads=<a,b>.
           gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
           ruby -ryaml -e '
             cfg = YAML.load_file("teams.yml") || {}
-            owner = ENV.fetch("HEAD_OWNER").downcase
+            owner = ENV.fetch("HEAD_OWNER", "").downcase
             name, team = (cfg["teams"] || {}).find { |k, _| k.to_s.downcase == owner }
             if team
               puts "found=true"
@@ -64,6 +66,7 @@ jobs:
               puts "found=false"
             end
           ' >> "$GITHUB_OUTPUT"
+          # shared:teams-lookup end
 
       - name: Request lead review
         if: steps.team.outputs.skip != 'true'

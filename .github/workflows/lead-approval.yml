@@ -142,18 +142,22 @@ jobs:
         env:
           HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
         run: |
+          # shared:teams-lookup begin
+          # The fork owner's team in zedu-ci's teams.yml (main): found=true|false, team=<key>, leads=<a,b>.
           gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
           ruby -ryaml -e '
             cfg = YAML.load_file("teams.yml") || {}
             owner = ENV.fetch("HEAD_OWNER", "").downcase
             name, team = (cfg["teams"] || {}).find { |k, _| k.to_s.downcase == owner }
             if team
-              puts "mapped=true"
+              puts "found=true"
+              puts "team=#{name}"
               puts "leads=#{Array(team["leads"]).join(",")}"
             else
-              puts "mapped=false"
+              puts "found=false"
             end
           ' >> "$GITHUB_OUTPUT"
+          # shared:teams-lookup end
 
       - name: Set status
         if: steps.pr.outputs.number != ''
@@ -163,7 +167,7 @@ jobs:
           AUTHOR: ${{ steps.pr.outputs.author }}
           HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
           HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
-          MAPPED: ${{ steps.leads.outputs.mapped }}
+          FOUND: ${{ steps.leads.outputs.found }}
           LEADS: ${{ steps.leads.outputs.leads }}
           LABELS: ${{ steps.pr.outputs.labels }}
         run: |
@@ -188,7 +192,7 @@ jobs:
               *,lead-verified,*) echo "success|Lead approval verified by a reviewer (lead-verified label)"; return ;;
             esac
             if [ -z "$HEAD_OWNER" ]; then echo "failure|Fork was deleted; reopen this PR from your team's org fork"; return; fi
-            if [ "$MAPPED" != true ]; then
+            if [ "$FOUND" != true ]; then
               if [ "${HEAD_OWNER,,}" = "${AUTHOR,,}" ]; then
                 echo "failure|Personal fork. Open this PR from your team's org fork, not $HEAD_OWNER/"; return
               fi

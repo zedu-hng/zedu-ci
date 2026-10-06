@@ -1,0 +1,96 @@
+name: Build gate
+
+# Reusable, called only by pr-build-react-native.yml and pr-build-flutter.yml (as
+# ./.github/workflows/build-gate.yml, so it always runs from the same zedu-ci commit as they do).
+# Runs in contributor forks.
+#
+# Decides whether the fork builds (only when the branch has an open PR into the review repo) and
+# which backend it talks to: `default_backend`, or the host on the PR body's
+# `Backend URL: https://api.<team>.groups.zedu.chat` line. Writes the .env from zedu-ci's
+# `env_template` (public values only; read from zedu-ci's main) with {{backend}} and {{client}}
+# filled in, base64-encoded for the build jobs.
+
+on:
+  workflow_call:
+    inputs:
+      default_backend:
+        type: string
+        required: true
+      env_template:
+        description: Path of the .env template in zedu-ci
+        type: string
+        required: true
+    outputs:
+      build:
+        description: "true when the branch has an open PR into the review repo"
+        value: ${{ jobs.gate.outputs.build }}
+      backend:
+        description: Backend host the build talks to
+        value: ${{ jobs.gate.outputs.backend }}
+      env:
+        description: The .env file, base64-encoded
+        value: ${{ jobs.gate.outputs.env }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Open PR check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.pr.outputs.build }}
+      backend: ${{ steps.pr.outputs.backend }}
+      env: ${{ steps.pr.outputs.env }}
+    steps:
+      - id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_REPO: ${{ vars.REVIEW_REPO || format('zedu-hng/{0}', github.event.repository.name) }}
+          CI_REPO: zedu-hng/zedu-ci
+          OWNER: ${{ github.repository_owner }}
+          BRANCH: ${{ github.ref_name }}
+          DEFAULT_BACKEND: ${{ inputs.default_backend }}
+          TEMPLATE: ${{ inputs.env_template }}
+        run: |
+          # Reviewers' branches in the review repo itself need no fork build (Fork build passes them).
+          if [ "$GITHUB_REPOSITORY" = "$REVIEW_REPO" ]; then
+            echo "::notice::Running in the review repo; no fork build needed."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr=$(gh api -X GET "repos/$REVIEW_REPO/pulls" -f state=open -f head="$OWNER:$BRANCH" --jq '.[0] // empty')
+          if [ -z "$pr" ]; then
+            echo "::notice::No open PR from $OWNER:$BRANCH into $REVIEW_REPO; skipping build. Open the PR, then run this workflow or push."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Open PR $REVIEW_REPO#$(jq -r .number <<< "$pr") from $OWNER:$BRANCH; building."
+
+          body=$(jq -r '.body // ""' <<< "$pr")
+          # shared:backend-url begin
+          # The PR body's Backend URL line: backend=<api host>, "" without a line, or "invalid".
+          line=$(printf '%s\n' "$body" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
+          backend=""
+          if [ -n "$line" ]; then
+            url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$line")
+            if [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then backend=${BASH_REMATCH[1]}; else backend=invalid; fi
+          fi
+          # shared:backend-url end
+          if [ "$backend" = invalid ]; then
+            echo "::error::The PR's Backend URL line must look like https://api.<team>.groups.zedu.chat (got '$url'). Fix it or delete it, then re-run."
+            exit 1
+          fi
+          [ -n "$backend" ] || backend=$DEFAULT_BACKEND
+          client=${backend#api.}
+          echo "Backend: $backend (web client: $client)"
+
+          template=$(gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/$TEMPLATE?ref=main")
+          env_file=$(grep -vE '^[[:space:]]*(#|$)' <<< "$template" | sed -e "s/{{backend}}/$backend/g" -e "s/{{client}}/$client/g")
+          {
+            echo "build=true"
+            echo "backend=$backend"
+            echo "env=$(base64 -w0 <<< "$env_file")"
+          } >> "$GITHUB_OUTPUT"
+

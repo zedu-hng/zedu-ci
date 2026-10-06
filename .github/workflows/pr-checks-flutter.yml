@@ -101,7 +101,7 @@ jobs:
           severity: MEDIUM,HIGH,CRITICAL
           exit-code: 1
 
-      - name: Results
+      - name: Record results
         if: always()
         env:
           INSTALL: ${{ steps.install.outcome }}
@@ -111,26 +111,17 @@ jobs:
           FORMAT: ${{ steps.format.outcome }}
           TESTS: ${{ steps.tests.outcome }}
           TRIVY: ${{ steps.trivy.outcome }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          failed=0
-          {
-            echo "### PR checks for \`${SHA:0:7}\`"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
           : > results.tsv
           row() { # context outcome
             local state desc
             case "$2" in
               success) state=success; desc="Passed" ;;
-              failure) state=failure; desc="Failed; see the PR checks run"; failed=$((failed + 1)) ;;
-              skipped) state=failure; desc="Not run: flutter pub get failed"; failed=$((failed + 1)) ;;
-              *) state=failure; desc="${2:-not run}"; failed=$((failed + 1)) ;;
+              failure) state=failure; desc="Failed; see the PR checks run" ;;
+              skipped) state=failure; desc="Not run: flutter pub get failed" ;;
+              *) state=failure; desc="${2:-not run}" ;;
             esac
             printf '%s\t%s\t%s\n' "$1" "$state" "$desc" >> results.tsv
-            echo "| $1 | $state: $desc |" >> "$GITHUB_STEP_SUMMARY"
           }
           row "Forbidden patterns" "$FORBIDDEN"
           row "Lazarus scanner" "$LAZARUS"
@@ -138,10 +129,32 @@ jobs:
           row "Format" "$FORMAT"
           row "Tests" "$TESTS"
           row "Trivy" "$TRIVY"
+
+      # shared:publish-results begin
+      # Same in every checks workflow (Lint fails on drift): pr-review-comment.yml reads this format.
+      - name: Publish results
+        if: always()
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ ! -s results.tsv ]; then
+            echo "::error::No check results were recorded."
+            echo "fail=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          {
+            echo "### $WORKFLOW for \`${SHA:0:7}\`"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            awk -F'\t' '{ printf "| %s | %s: %s |\n", $1, $2, $3 }' results.tsv
+          } >> "$GITHUB_STEP_SUMMARY"
           jq -Rn --arg sha "$SHA" --arg url "$RUN_URL" \
             '{sha: $sha, url: $url, checks: [inputs | split("\t") | {context: .[0], state: .[1], description: .[2]}]}' \
             < results.tsv > pr-checks-results.json
-          echo "fail=$failed" >> "$GITHUB_ENV"
+          echo "fail=$(awk -F'\t' '$2 != "success"' results.tsv | grep -c . || true)" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -155,3 +168,4 @@ jobs:
         if: always()
         run: |
           [ "${fail:-1}" = 0 ] || { echo "::error::${fail:-Some} check(s) failed; see the summary above."; exit 1; }
+      # shared:publish-results end

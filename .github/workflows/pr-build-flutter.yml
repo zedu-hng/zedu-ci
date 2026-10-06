@@ -33,60 +33,13 @@ permissions:
   contents: read
 
 jobs:
+  # Same commit of zedu-ci as this file: a relative path in a called workflow resolves in zedu-ci.
   gate:
-    name: Open PR check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      build: ${{ steps.pr.outputs.build }}
-      backend: ${{ steps.pr.outputs.backend }}
-      env: ${{ steps.pr.outputs.env }}
-    steps:
-      - id: pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REVIEW_REPO: ${{ vars.REVIEW_REPO || format('zedu-hng/{0}', github.event.repository.name) }}
-          CI_REPO: zedu-hng/zedu-ci
-          OWNER: ${{ github.repository_owner }}
-          BRANCH: ${{ github.ref_name }}
-          DEFAULT_BACKEND: ${{ inputs.default_backend }}
-          TEMPLATE: ${{ inputs.env_template }}
-        run: |
-          # Reviewers' branches in the review repo itself need no fork build (Fork build passes them).
-          if [ "$GITHUB_REPOSITORY" = "$REVIEW_REPO" ]; then
-            echo "::notice::Running in the review repo; no fork build needed."
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          pr=$(gh api -X GET "repos/$REVIEW_REPO/pulls" -f state=open -f head="$OWNER:$BRANCH" --jq '.[0] // empty')
-          if [ -z "$pr" ]; then
-            echo "::notice::No open PR from $OWNER:$BRANCH into $REVIEW_REPO; skipping build. Open the PR, then run this workflow or push."
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Open PR $REVIEW_REPO#$(jq -r .number <<< "$pr") from $OWNER:$BRANCH; building."
-
-          # Same parse as the review repo's Fork build relay.
-          line=$(jq -r '.body // ""' <<< "$pr" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
-          backend=$DEFAULT_BACKEND
-          if [ -n "$line" ]; then
-            url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$line")
-            if ! [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then
-              echo "::error::The PR's Backend URL line must look like https://api.<team>.groups.zedu.chat (got '$url'). Fix it or delete it, then re-run."
-              exit 1
-            fi
-            backend=${BASH_REMATCH[1]}
-          fi
-          client=${backend#api.}
-          echo "Backend: $backend (web client: $client)"
-
-          template=$(gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/$TEMPLATE?ref=main")
-          env_file=$(grep -vE '^[[:space:]]*(#|$)' <<< "$template" | sed -e "s/{{backend}}/$backend/g" -e "s/{{client}}/$client/g")
-          {
-            echo "build=true"
-            echo "backend=$backend"
-            echo "env=$(base64 -w0 <<< "$env_file")"
-          } >> "$GITHUB_OUTPUT"
+    name: Gate
+    uses: ./.github/workflows/build-gate.yml
+    with:
+      default_backend: ${{ inputs.default_backend }}
+      env_template: ${{ inputs.env_template }}
 
   build:
     name: ${{ matrix.target }} · ${{ needs.gate.outputs.backend }}
