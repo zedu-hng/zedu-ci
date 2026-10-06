@@ -121,8 +121,8 @@ jobs:
             has_ready=false; case ",$labels," in *,"$REVIEW_LABEL",*) has_ready=true ;; esac
             has_queued=false; case ",$labels," in *,"$QUEUED_LABEL",*) has_queued=true ;; esac
             if [ "$draft" = "true" ] || [ "$green" != "true" ]; then
-              [ "$has_ready" = true ] && gh pr edit "$num" --remove-label "$REVIEW_LABEL" || true
-              [ "$has_queued" = true ] && gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true
+              if [ "$has_ready" = true ]; then gh pr edit "$num" --remove-label "$REVIEW_LABEL" || true; fi
+              if [ "$has_queued" = true ]; then gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true; fi
               echo "PR #$num ($team): not eligible (draft=$draft green=$green)"
               continue
             fi
@@ -140,7 +140,7 @@ jobs:
                 continue
               fi
               waiting[$team]=$(( ${waiting[$team]:-0} + 1 ))
-              [ "$has_queued" = true ] && gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true
+              if [ "$has_queued" = true ]; then gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true; fi
               if gh pr comment "$num" --body "**Ready for review.** Lead approved and checks are green. @$REVIEWERS — claim this PR with \`/claim\`."; then
                 echo "PR #$num ($team): ready"
               else
