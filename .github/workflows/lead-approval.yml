@@ -44,27 +44,26 @@ jobs:
     env:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - run: |
           # Re-check only contributor PRs whose status isn't green: each dispatch is a runner job on
           # the org's shared 20, and a green PR can only turn red through a review (submitted, edited
           # or dismissed), which lead-approval-relay.yml re-checks straight away, or a push, which
           # runs this workflow anyway. One GraphQL read covers every PR and its status.
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/open-prs.sh
           set -o pipefail
-          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
-          prs=$(gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query='
-            query($owner: String!, $name: String!, $endCursor: String) {
-              repository(owner: $owner, name: $name) {
-                pullRequests(states: OPEN, first: 100, after: $endCursor) {
-                  pageInfo { hasNextPage endCursor }
-                  nodes {
-                    number baseRefName
-                    headRepository { nameWithOwner }
-                    commits(last: 1) { nodes { commit { status { contexts { context state } } } } }
-                  }
-                }
-              }
-            }' | jq -rs --arg repo "$REPO" --arg ctx "$CONTEXT" '
-              [.[].data.repository.pullRequests.nodes[]][]
+          prs=$(open_prs | jq -r --arg repo "$REPO" --arg ctx "$CONTEXT" '
+              .[]
               | select(.baseRefName == "dev" or .baseRefName == "central-staging")
               | select(.headRepository.nameWithOwner != $repo)
               | select(([.commits.nodes[0].commit.status.contexts[]? | select(.context == $ctx) | .state][0] // "") != "SUCCESS")
@@ -92,6 +91,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Resolve PR
         id: pr
         env:
@@ -142,22 +151,9 @@ jobs:
         env:
           HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
         run: |
-          # shared:teams-lookup begin
-          # The fork owner's team in zedu-ci's teams.yml (main): found=true|false, team=<key>, leads=<a,b>.
-          gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
-          ruby -ryaml -e '
-            cfg = YAML.load_file("teams.yml") || {}
-            owner = ENV.fetch("HEAD_OWNER", "").downcase
-            name, team = (cfg["teams"] || {}).find { |k, _| k.to_s.downcase == owner }
-            if team
-              puts "found=true"
-              puts "team=#{name}"
-              puts "leads=#{Array(team["leads"]).join(",")}"
-            else
-              puts "found=false"
-            end
-          ' >> "$GITHUB_OUTPUT"
-          # shared:teams-lookup end
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/teams.sh
+          team_of "$HEAD_OWNER" >> "$GITHUB_OUTPUT"
 
       - name: Set status
         if: steps.pr.outputs.number != ''
@@ -223,9 +219,8 @@ jobs:
           }
           result=$(decide) || { echo "::warning::API error deciding PR #$PR; leaving the status unchanged."; exit 0; }
           state=${result%%|*}; desc=${result#*|}; desc=${desc:0:140}
-          # Write only on change: GitHub caps statuses per commit and context.
-          current=$(gh api "repos/$REPO/commits/$SHA/status" | jq -r --arg c "$CONTEXT" \
-            '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)
-          if [ "$current" = "$state|$desc" ]; then echo "PR #$PR: unchanged ($state: $desc)"; exit 0; fi
-          gh api "repos/$REPO/statuses/$SHA" -f state="$state" -f context="$CONTEXT" -f description="$desc" >/dev/null
-          echo "PR #$PR: $state: $desc"
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
+          status_set "$SHA" "$CONTEXT" "$state" "$desc" \
+            || { echo "::error::Couldn't post $CONTEXT for PR #$PR (API error)."; exit 1; }
+          echo "PR #$PR: $status_outcome ($state: $desc)"

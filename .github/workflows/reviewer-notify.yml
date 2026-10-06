@@ -56,39 +56,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Load registered teams
         run: |
-          gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
-          ruby -ryaml -e '
-            cfg = YAML.load_file("teams.yml") || {}
-            puts (cfg["teams"] || {}).keys
-          ' > teams.txt
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/teams.sh
+          team_orgs > teams.txt
 
       - name: Collect PRs
         run: |
           set -o pipefail
           # One paginated GraphQL read instead of two REST status calls per PR. pipefail: an API
           # failure must fail the run, not read as "no PRs" and strip every label.
-          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
-          gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query='
-            query($owner: String!, $name: String!, $endCursor: String) {
-              repository(owner: $owner, name: $name) {
-                pullRequests(states: OPEN, first: 100, after: $endCursor) {
-                  pageInfo { hasNextPage endCursor }
-                  nodes {
-                    number createdAt isDraft baseRefName headRefOid
-                    headRepository { nameWithOwner }
-                    headRepositoryOwner { login }
-                    labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
-                    assignees { totalCount }
-                    commits(last: 1) { nodes { commit { status { contexts { context state } } } } }
-                  }
-                }
-              }
-            }' |
-          jq -rs --arg repo "$REPO" '
-            [.[].data.repository.pullRequests.nodes[]]
-            | map(select((.baseRefName == "dev" or .baseRefName == "central-staging")
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/open-prs.sh
+          open_prs |
+          jq -r --arg repo "$REPO" '
+            map(select((.baseRefName == "dev" or .baseRefName == "central-staging")
                 and .headRepository.nameWithOwner != $repo))
             | .[]
             # Over 100 labels: queue labels may be on a page we did not read, and leaving the PR out

@@ -60,6 +60,16 @@ jobs:
       REPO: ${{ github.repository }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - run: |
           # PRs whose relay is already running or waiting on its delay: leave their chain alone (a
           # dispatch would cancel it through the per-PR concurrency group).
@@ -68,21 +78,12 @@ jobs:
               --jq '.workflow_runs[].display_title | capture("#(?<n>[0-9]+)$").n'
           done | sort -u > active.txt
           # One GraphQL read gives every open PR's head statuses, instead of a REST status call per PR.
-          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
-          gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query='
-            query($owner: String!, $name: String!, $endCursor: String) {
-              repository(owner: $owner, name: $name) {
-                pullRequests(states: OPEN, first: 100, after: $endCursor) {
-                  pageInfo { hasNextPage endCursor }
-                  nodes {
-                    number baseRefName
-                    commits(last: 1) { nodes { commit { status { contexts { context description } } } } }
-                  }
-                }
-              }
-            }' |
-          jq -rs '
-            [.[].data.repository.pullRequests.nodes[]][]
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/open-prs.sh
+          set -o pipefail
+          open_prs |
+          jq -r '
+            .[]
             | select(.baseRefName == "dev" or .baseRefName == "central-staging")
             | ([.commits.nodes[0].commit.status.contexts[]? | select(.context == "Fork build")][0].description // "") as $desc
             | "\(.number) \($desc)"' |
@@ -146,6 +147,16 @@ jobs:
       CONTEXT: Fork build
       BACKEND_CONTEXT: Backend dependency
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Resolve PR
         id: pr
         run: |
@@ -202,30 +213,21 @@ jobs:
           ' <<< "$data" >> "$GITHUB_OUTPUT"
 
           # The backend this PR's build must use: the Backend URL line of its body, or the default. The
-          # fork's build gate (build-gate.yml) runs the same parse; Lint fails if the two drift.
+          # fork's build gate (build-gate.yml) parses the line with the same script.
           sha=$(jq -r '.data.repository.pullRequest.headRefOid' <<< "$data")
-          body=$(jq -r '.data.repository.pullRequest.body // ""' <<< "$data")
-          # shared:backend-url begin
-          # The PR body's Backend URL line: backend=<api host>, "" without a line, or "invalid".
-          line=$(printf '%s\n' "$body" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
-          backend=""
-          if [ -n "$line" ]; then
-            url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$line")
-            if [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then backend=${BASH_REMATCH[1]}; else backend=invalid; fi
-          fi
-          # shared:backend-url end
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/backend-url.sh
+          backend=$(backend_from_body "$(jq -r '.data.repository.pullRequest.body // ""' <<< "$data")")
           case "$backend" in
             "") backend=$DEFAULT_BACKEND; state=success; desc="Uses the dev backend ($DEFAULT_BACKEND)" ;;
             invalid) state=failure; desc="Backend URL must look like https://api.<name>.groups.zedu.chat" ;;
             *) state=failure; desc="Depends on backend $backend. Merge after it's on dev, then delete the Backend URL line." ;;
           esac
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
-          last=$(gh api "repos/$REPO/commits/$sha/status" | jq -r --arg c "$BACKEND_CONTEXT" \
-            '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)
-          if [ "$last" != "$state|${desc:0:140}" ]; then
-            gh api "repos/$REPO/statuses/$sha" -f state="$state" -f context="$BACKEND_CONTEXT" -f description="${desc:0:140}" >/dev/null \
-              || echo "::warning::Couldn't post the $BACKEND_CONTEXT status."
-          fi
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
+          status_set "$sha" "$BACKEND_CONTEXT" "$state" "$desc" \
+            || echo "::warning::Couldn't post the $BACKEND_CONTEXT status."
 
       - name: No fork build needed
         id: none_needed
@@ -242,11 +244,10 @@ jobs:
           else
             reason="Docs-only change; no build needed"
           fi
-          last=$(gh api "repos/$REPO/commits/$SHA/status" | jq -r --arg c "$CONTEXT" \
-            '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)
-          [ "$last" = "success|$reason" ] && exit 0
-          gh api "repos/$REPO/statuses/$SHA" -f state=success -f context="$CONTEXT" -f description="$reason" >/dev/null
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
+          status_set "$SHA" "$CONTEXT" success "$reason"
+          if [ "$status_outcome" = posted ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
 
       - name: Check the fork's PR build
         id: run
@@ -257,13 +258,11 @@ jobs:
           BACKEND: ${{ steps.pr.outputs.backend }}
         run: |
           [[ "$ATTEMPT" =~ ^[0-9]+$ ]] || { echo "Invalid attempt: $ATTEMPT"; exit 1; }
-          # Write only on change: each write is an API call, and GitHub caps statuses per commit and context.
-          last=$(gh api "repos/$REPO/commits/$SHA/status" | jq -r --arg c "$CONTEXT" \
-            '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)
-          status() {
-            [ "$1|$2" = "$last" ] && return 0
-            gh api "repos/$REPO/statuses/$SHA" -f state="$1" -f context="$CONTEXT" -f description="$2" ${3:+-f target_url="$3"} >/dev/null
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
+          status() { # state description [url]; changed=true when the status was written
+            status_set "$SHA" "$CONTEXT" "$1" "$2" "${3:-}" || return 1
+            if [ "$status_outcome" = posted ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
           }
           again() { echo "again=true" >> "$GITHUB_OUTPUT"; }
           no_build() {

@@ -85,6 +85,16 @@ jobs:
       TEMPLATE: ${{ inputs.template }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Check rules
         run: |
           set -o pipefail
@@ -144,13 +154,12 @@ jobs:
           fi
 
           # Post each rule as a commit status, only when it changes.
-          current=$(gh api "repos/$REPO/commits/$SHA/status" --jq '.statuses[] | "\(.context)|\(.state)|\(.description)"' || true)
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
           failed=0; post_failed=0
           report() { # context state description
-            local desc=${3:0:140}
             [ "$2" = failure ] && failed=$((failed + 1))
-            if grep -qxF "$1|$2|$desc" <<< "$current"; then return 0; fi
-            if ! gh api "repos/$REPO/statuses/$SHA" -f context="$1" -f state="$2" -f description="$desc" -f target_url="$RUN_URL" >/dev/null; then
+            if ! status_set "$SHA" "$1" "$2" "$3" "$RUN_URL"; then
               echo "::error::Couldn't post the $1 status (API error). Re-run this job."
               post_failed=1
             fi

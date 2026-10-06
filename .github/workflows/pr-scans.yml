@@ -95,30 +95,26 @@ jobs:
           row "ClamAV" "$CLAMAV"
 
       # shared:publish-results begin
-      # Same in every checks workflow (Lint fails on drift): pr-review-comment.yml reads this format.
+      # Last, after every scan, so the scanners never see zedu-ci's files. Same in every checks
+      # workflow (Lint fails on drift).
+      - name: Check out zedu-ci scripts
+        if: always()
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      # pr-review-comment.yml reads this format.
       - name: Publish results
         if: always()
         env:
           SHA: ${{ github.event.pull_request.head.sha }}
           WORKFLOW: ${{ github.workflow }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          if [ ! -s results.tsv ]; then
-            echo "::error::No check results were recorded."
-            echo "fail=1" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          {
-            echo "### $WORKFLOW for \`${SHA:0:7}\`"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-            awk -F'\t' '{ printf "| %s | %s: %s |\n", $1, $2, $3 }' results.tsv
-          } >> "$GITHUB_STEP_SUMMARY"
-          jq -Rn --arg sha "$SHA" --arg url "$RUN_URL" \
-            '{sha: $sha, url: $url, checks: [inputs | split("\t") | {context: .[0], state: .[1], description: .[2]}]}' \
-            < results.tsv > pr-checks-results.json
-          echo "fail=$(awk -F'\t' '$2 != "success"' results.tsv | grep -c . || true)" >> "$GITHUB_ENV"
+        run: bash .zedu-ci/scripts/publish-results.sh
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

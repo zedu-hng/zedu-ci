@@ -72,17 +72,27 @@ repos). See the comments in the file. Add a team or change leads with a PR here.
 
 ## Shared code
 
-A called workflow can only reach another file of this repo at the same commit through a nested
-reusable workflow (`uses: ./.github/workflows/...`), so whole jobs are shared that way
-(`build-gate.yml`). Composite actions and scripts would need this repo checked out at a known
-commit, which a called workflow can't name without a second copy of the SHA in every caller.
+Shared shell code lives in `scripts/`, and every workflow that uses it checks this repo out at its
+own commit first (`ref: ${{ job.workflow_sha }}`, `path: .zedu-ci`), so the scripts are pinned with
+the workflow and need no second SHA in the callers:
 
-Smaller pieces are copied instead, between `# shared:<name> begin` and `# shared:<name> end`
-markers: `publish-results` (the results format `pr-review-comment.yml` reads), `backend-url` (the
-build gate and the relay must parse the line the same way) and `teams-lookup`. Lint fails when the
-copies of a block differ, so change every copy in the same PR.
+| Script | Used by |
+|---|---|
+| `lib/status.sh` (`status_set`: write a commit status only when it changes) | rules, lead approval, fork build, review comment |
+| `lib/teams.sh` (`team_of`, `team_orgs`; teams.yml read live from `main`) | team routing, lead approval, reviewer notify |
+| `lib/backend-url.sh` (`backend_from_body`) | build gate (fork side), fork build relay |
+| `lib/open-prs.sh` (`open_prs`: one GraphQL read of every open PR) | lead approval and fork build sweeps, reviewer notify, recheck |
+| `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
+
+In the checks workflows the checkout comes last, so the scanners never see zedu-ci's files. Whole
+jobs are shared as nested reusable workflows (`build-gate.yml`, called as
+`./.github/workflows/build-gate.yml`, which also resolves to the same commit).
+
+The steps around `publish-results.sh` (checkout, upload, fail) are still repeated YAML, marked
+`# shared:publish-results begin/end`; `scripts/check-shared-blocks.rb` fails Lint when the copies
+differ.
 
 ## Lint
 
-Every PR runs actionlint (with shellcheck), checks the shared blocks still match and parses the data
-files. CodeRabbit reviews every PR.
+Every PR runs actionlint (with shellcheck), shellcheck and `scripts/test.sh` on `scripts/`, the
+shared-block check, and a parse of the data files. CodeRabbit reviews every PR.

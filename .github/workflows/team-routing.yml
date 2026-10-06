@@ -30,6 +30,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Resolve team
         id: team
         run: |
@@ -51,22 +61,9 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
-          # shared:teams-lookup begin
-          # The fork owner's team in zedu-ci's teams.yml (main): found=true|false, team=<key>, leads=<a,b>.
-          gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
-          ruby -ryaml -e '
-            cfg = YAML.load_file("teams.yml") || {}
-            owner = ENV.fetch("HEAD_OWNER", "").downcase
-            name, team = (cfg["teams"] || {}).find { |k, _| k.to_s.downcase == owner }
-            if team
-              puts "found=true"
-              puts "team=#{name}"
-              puts "leads=#{Array(team["leads"]).join(",")}"
-            else
-              puts "found=false"
-            end
-          ' >> "$GITHUB_OUTPUT"
-          # shared:teams-lookup end
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/teams.sh
+          team_of "$HEAD_OWNER" >> "$GITHUB_OUTPUT"
 
       - name: Request lead review
         if: steps.team.outputs.skip != 'true'
