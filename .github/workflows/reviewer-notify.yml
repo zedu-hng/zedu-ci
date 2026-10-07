@@ -5,7 +5,8 @@ name: Reviewer notify
 #   reviewers team is mentioned once, but only while its team has fewer than CAP unclaimed PRs
 #   waiting. Beyond that it is marked queued.
 # - A queued PR is promoted oldest-first as slots free (a PR is claimed, merged or closed).
-# - Claimed PRs keep the label (the claim sweep uses it) but don't occupy a slot.
+# - Claimed PRs keep the label (the claim sweep uses it) but don't occupy a slot. If a push clears
+#   the label while a new head is re-checked, it is restored once the PR is green again.
 # - PRs that go back to draft or fail a gate lose the labels and re-queue later.
 # Reviewers are not assigned. Never checks out PR code.
 #
@@ -120,6 +121,12 @@ jobs:
               continue
             fi
             if [ "$na" != "0" ]; then
+              # Claimed: a push can clear the label while its new head is re-checked, and the
+              # claim sweep then loses sight of the PR. Restore it, but don't count a slot.
+              if [ "$has_ready" != true ] && ! gh pr edit "$num" --add-label "$REVIEW_LABEL"; then
+                echo "PR #$num ($team): failed to add $REVIEW_LABEL" >&2
+              fi
+              if [ "$has_queued" = true ]; then gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true; fi
               echo "PR #$num ($team): claimed; not counted"
               continue
             fi
