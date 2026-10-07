@@ -234,8 +234,6 @@ jobs:
           jq -r --arg repo "$REPO" '
             .data.repository as $r
             | $r.pullRequest as $p
-            | ($p.files.nodes // [] | map(.path)) as $files
-            | ($p.files.totalCount // 0) as $fileCount
             | ($p.labels.nodes // [] | map(.name)) as $labels
             | "sha=\($p.headRefOid)",
               "head_repo=\($p.headRepository.nameWithOwner // "")",
@@ -243,11 +241,18 @@ jobs:
                             or (($p.headRepository.nameWithOwner // "") == ($r.parent.nameWithOwner // "")
                                 and ($p.headRefName == "dev" or $p.headRefName == "central-staging"))
                           then "true" else "false" end)",
-              "docs_only=\(if ($fileCount > 0) and ($fileCount <= 100) and ($files | all(endswith(".md")))
-                            then "true" else "false" end)",
               "bypass=\(if ($labels | index("sync")) or ($labels | index("hotfix"))
                          then "true" else "false" end)"
           ' <<< "$data" >> "$GITHUB_OUTPUT"
+          # Markdown-only PRs need no build; the fork's build gate skips them by the same rule.
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/docs-only.sh
+          if jq -r '.data.repository.pullRequest.files.nodes[]?.path' <<< "$data" \
+               | docs_only "$(jq -r '.data.repository.pullRequest.files.totalCount // 0' <<< "$data")"; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
 
           # The backend this PR's build must use: the Backend URL line of its body, or the default. The
           # fork's build gate (build-gate.yml) parses the line with the same script.

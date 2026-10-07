@@ -81,6 +81,7 @@ the workflow and need no second SHA in the callers:
 | `lib/status.sh` (`status_set`: write a commit status only when it changes) | rules, lead approval, fork build, review comment |
 | `lib/teams.sh` (`team_of`, `team_orgs`; teams.yml read live from `main`) | team routing, lead approval, reviewer notify |
 | `lib/backend-url.sh` (`backend_from_body`) | build gate (fork side), fork build relay |
+| `lib/docs-only.sh` (`docs_only`: a Markdown-only PR needs no build) | build gate (fork side), fork build relay |
 | `lib/open-prs.sh` (`open_prs`: one GraphQL read of every open PR) | lead approval and fork build sweeps, reviewer notify, recheck |
 | `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
 
