@@ -20,6 +20,15 @@ check "backend: space inside" "invalid" "$(backend_from_body 'Backend URL: https
 check "backend: two spaces, angle brackets" "api.team.groups.zedu.chat" "$(backend_from_body 'Backend URL:  <https://api.team.groups.zedu.chat>  ')"
 check "backend: no space after colon" "api.team.groups.zedu.chat" "$(backend_from_body 'Backend URL:https://api.team.groups.zedu.chat')"
 
+# shellcheck source=scripts/lib/docs-only.sh
+source scripts/lib/docs-only.sh
+dq() { if printf '%s\n' "${@:2}" | docs_only "$1"; then echo yes; else echo no; fi; }
+check "docs-only: all markdown" "yes" "$(dq 2 README.md docs/a.md)"
+check "docs-only: code too" "no" "$(dq 2 README.md src/a.ts)"
+check "docs-only: no files" "no" "$(dq 0)"
+check "docs-only: over 100" "no" "$(dq 101 a.md)"
+check "docs-only: list shorter than total" "no" "$(dq 3 a.md b.md)"
+
 # Stub gh: status reads come from $STATUSES, writes are logged to $WRITES.
 WRITES=$(mktemp); READS=$(mktemp)
 gh() {

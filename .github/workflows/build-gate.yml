@@ -77,7 +77,18 @@ jobs:
             echo "build=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "Open PR $REVIEW_REPO#$(jq -r .number <<< "$pr") from $OWNER:$BRANCH; building."
+          number=$(jq -r .number <<< "$pr")
+          # A PR that only changes Markdown needs no build (Fork build reports it as docs-only, by the
+          # same rule). A failed lookup builds anyway.
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/docs-only.sh
+          if total=$(gh api "repos/$REVIEW_REPO/pulls/$number" --jq .changed_files) \
+             && gh api "repos/$REVIEW_REPO/pulls/$number/files?per_page=100" --jq '.[].filename' | docs_only "$total"; then
+            echo "::notice::$REVIEW_REPO#$number only changes Markdown; no build needed."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Open PR $REVIEW_REPO#$number from $OWNER:$BRANCH; building."
 
           # shellcheck source=/dev/null
           source .zedu-ci/scripts/lib/backend-url.sh
