@@ -31,27 +31,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Re-run checks that failed only on PR review
         run: |
           set -o pipefail
           # One GraphQL read (about 2 points per 100 PRs) gives every open PR's head statuses; a
           # run lookup follows only for PRs whose sole failing check is PR review.
-          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
-          gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query='
-            query($owner: String!, $name: String!, $endCursor: String) {
-              repository(owner: $owner, name: $name) {
-                pullRequests(states: OPEN, first: 100, after: $endCursor) {
-                  pageInfo { hasNextPage endCursor }
-                  nodes {
-                    number baseRefName headRefOid
-                    commits(last: 1) { nodes { commit { status { contexts { context state } } } } }
-                  }
-                }
-              }
-            }' |
-          jq -rs '
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/open-prs.sh
+          open_prs |
+          jq -r '
             ["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Jest","PR review","Build","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"] as $checks
-            | [.[].data.repository.pullRequests.nodes[]][]
+            | .[]
             | select(.baseRefName == "dev" or .baseRefName == "central-staging")
             | select([.commits.nodes[0].commit.status.contexts[]?
                       | select((.context as $c | $checks | index($c)) and .state == "FAILURE") | .context] == ["PR review"])

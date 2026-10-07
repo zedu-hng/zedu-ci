@@ -1,7 +1,8 @@
 name: Lint
 
-# zedu-ci's own check: actionlint (with shellcheck on every run block) and a YAML parse of the data
-# files. CodeRabbit reviews every PR too.
+# zedu-ci's own check: actionlint (with shellcheck on every run block), shellcheck and tests for
+# scripts/, copies of shared blocks still matching (scripts/check-shared-blocks.rb), and a YAML parse
+# of the data files. CodeRabbit reviews every PR too.
 
 on:
   pull_request:
@@ -33,6 +34,14 @@ jobs:
           curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
+
+      - name: Scripts
+        run: |
+          shellcheck -x -P SCRIPTDIR/.. scripts/*.sh scripts/lib/*.sh
+          bash scripts/test.sh
+
+      - name: Shared blocks match
+        run: ruby scripts/check-shared-blocks.rb
 
       - name: Data files parse
         run: ruby -ryaml -e 'cfg = YAML.load_file("teams.yml"); raise "teams.yml has no teams" unless cfg["teams"].is_a?(Hash); puts "#{cfg["teams"].size} teams"'

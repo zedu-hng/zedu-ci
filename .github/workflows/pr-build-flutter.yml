@@ -1,0 +1,158 @@
+name: PR build (Flutter)
+
+# Reusable. Runs in contributor forks on the fork's Actions minutes: macOS, Windows and Linux builds
+# of zedu-desktop. Builds only when the branch has an open PR into the review repo, so
+# work-in-progress pushes cost nothing. Any branch name builds, so a misnamed branch still gets a
+# Fork build result (Branch name reports the naming problem) instead of waiting forever.
+# The review repo's Fork build relay reads this run's result for the PR's head commit.
+#
+# Backend: every build talks to our dev backend (`default_backend`), or to the host on the PR body's
+# `Backend URL: https://api.<team>.groups.zedu.chat` line. .env is written from zedu-ci's
+# `env_template` (public values only; read at this zedu-ci commit) with {{backend}} and {{client}}
+# filled in. Build job names end in " · <backend host>": the relay compares that with the PR body.
+#
+# Caller: .github/workflows/pr-build.yml named "PR build", on push and workflow_dispatch, with a
+# per-ref concurrency group.
+# Caller permissions: contents: read.
+
+on:
+  workflow_call:
+    inputs:
+      default_backend:
+        type: string
+        default: api.hng.groups.zedu.chat
+      env_template:
+        description: Path of the .env template in zedu-ci
+        type: string
+        default: build/zedu-desktop.env
+      flutter_version:
+        type: string
+        default: "3.41.5"
+
+permissions:
+  contents: read
+
+jobs:
+  # Same commit of zedu-ci as this file: a relative path in a called workflow resolves in zedu-ci.
+  gate:
+    name: Gate
+    uses: ./.github/workflows/build-gate.yml
+    with:
+      default_backend: ${{ inputs.default_backend }}
+      env_template: ${{ inputs.env_template }}
+
+  build:
+    name: ${{ matrix.target }} · ${{ needs.gate.outputs.backend }}
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos
+            os: macos-15
+          # audioplayers_windows still builds with /await, which Visual Studio 18 (windows-latest) removed.
+          - target: windows
+            os: windows-2022
+          - target: linux
+            os: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+
+      - name: Linux build dependencies
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          # Toolchain + GTK, then plugin deps: audioplayers (gstreamer), flutter_secure_storage (libsecret),
+          # local_notifier (libnotify), tray_manager (ayatana-appindicator).
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libsecret-1-dev libnotify-dev \
+            libayatana-appindicator3-dev
+
+      # .env is a bundled asset (pubspec.yaml), so it must exist. It never falls back to .env.example,
+      # whose default points at Zedu's own staging.
+      - name: Write .env
+        env:
+          ENV_FILE: ${{ needs.gate.outputs.env }}
+        run: printf '%s' "$ENV_FILE" | base64 --decode > .env
+
+      - run: flutter pub get
+
+      # agora_rtc_engine's CMake extracts its SDKs inside the plugin dir, which Flutter reaches through
+      # .plugin_symlinks; CMake refuses to extract through a symlink on Windows. Pre-extract into the
+      # real pub-cache dir and mark it .plugin_dev so the plugin skips its own download/extract.
+      - name: Pre-fetch Agora Windows SDKs
+        if: matrix.target == 'windows'
+        run: |
+          version=$(awk '/^  agora_rtc_engine:/{f=1} f&&/version:/{gsub(/"/,"",$2); print $2; exit}' pubspec.lock)
+          plugin="$(cygpath -u "$PUB_CACHE")/hosted/pub.dev/agora_rtc_engine-$version/windows"
+          script="$plugin/cmake/DownloadSDK.cmake"
+          for kind in IRIS NATIVE; do
+            url=$(sed -nE "s/^set\(${kind}_SDK_DOWNLOAD_URL \"([^\"]+)\"\)/\1/p" "$script")
+            dir="$plugin/third_party/$(echo "$kind" | tr '[:upper:]' '[:lower:]')/lib"
+            mkdir -p "$dir"
+            curl -sSfL "$url" -o "$RUNNER_TEMP/$kind.zip"
+            7z x -y -o"$dir" "$RUNNER_TEMP/$kind.zip" > /dev/null
+          done
+          touch "$plugin/.plugin_dev"
+
+      - name: Build
+        if: matrix.target != 'macos'
+        run: flutter build ${{ matrix.target }} --release
+
+      # The Xcode project uses automatic signing with a team profile, and keychain-access-groups is a
+      # restricted entitlement that needs one. Review builds are ad-hoc signed without it instead.
+      - name: Build (macOS, ad-hoc signed)
+        if: matrix.target == 'macos'
+        run: |
+          flutter build macos --release --config-only
+          cp macos/Runner/Release.entitlements "$RUNNER_TEMP/ci.entitlements"
+          plutil -remove keychain-access-groups "$RUNNER_TEMP/ci.entitlements"
+          xcodebuild \
+            -workspace macos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -derivedDataPath build/macos \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            CODE_SIGN_ENTITLEMENTS="$RUNNER_TEMP/ci.entitlements" \
+            build
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "$TARGET" in
+            macos)
+              app=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
+              ditto -c -k --sequesterRsrc --keepParent "$app" zedu-macos.zip ;;
+            windows)
+              7z a zedu-windows.zip ./build/windows/x64/runner/Release/* ;;
+            linux)
+              tar -czf zedu-linux.tar.gz -C build/linux/x64/release/bundle . ;;
+          esac
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            zedu-macos.zip
+            zedu-windows.zip
+            zedu-linux.tar.gz
+          if-no-files-found: error
+          retention-days: 14

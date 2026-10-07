@@ -1,0 +1,161 @@
+name: PR build (React Native)
+
+# Reusable. Runs in contributor forks on the fork's Actions minutes: an Android APK and an iOS
+# simulator build of zedu-mobile. Builds only when the branch has an open PR into the review repo, so
+# work-in-progress pushes cost nothing. Any branch name builds, so a misnamed branch still gets a
+# Fork build result (Branch name reports the naming problem) instead of waiting forever.
+# The review repo's Fork build relay reads this run's result for the PR's head commit.
+#
+# Backend: every build talks to our dev backend (`default_backend`), or to the host on the PR body's
+# `Backend URL: https://api.<team>.groups.zedu.chat` line. .env is written from zedu-ci's
+# `env_template` (public values only; read at this zedu-ci commit) with {{backend}} and {{client}}
+# filled in. Build job names end in " · <backend host>": the relay compares that with the PR body.
+#
+# Caller: .github/workflows/pr-build.yml named "PR build", on push and workflow_dispatch, with a
+# per-ref concurrency group.
+# Caller permissions: contents: read.
+
+on:
+  workflow_call:
+    inputs:
+      default_backend:
+        type: string
+        default: api.hng.groups.zedu.chat
+      env_template:
+        description: Path of the .env template in zedu-ci
+        type: string
+        default: build/zedu-mobile.env
+      node_version:
+        type: string
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  # Same commit of zedu-ci as this file: a relative path in a called workflow resolves in zedu-ci.
+  gate:
+    name: Gate
+    uses: ./.github/workflows/build-gate.yml
+    with:
+      default_backend: ${{ inputs.default_backend }}
+      env_template: ${{ inputs.env_template }}
+
+  android:
+    name: Android APK · ${{ needs.gate.outputs.backend }}
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env
+        env:
+          ENV_FILE: ${{ needs.gate.outputs.env }}
+        run: printf '%s' "$ENV_FILE" | base64 --decode > .env
+
+      - name: Assemble release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-simulator:
+    name: iOS simulator build · ${{ needs.gate.outputs.backend }}
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      # Gemfile.lock targets Ruby 2.7 / Bundler 2.1 (unavailable on macos-15), so skip Bundler and
+      # install the exact CocoaPods version recorded in Podfile.lock instead.
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Install CocoaPods
+        run: gem install cocoapods -v "$(awk '/^COCOAPODS:/{print $2}' ios/Podfile.lock)" --no-document
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env
+        env:
+          ENV_FILE: ${{ needs.gate.outputs.env }}
+        run: printf '%s' "$ENV_FILE" | base64 --decode > .env
+
+      # Reuse pod downloads (Agora's SDK zips are large) and survive short network/DNS blips.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: cocoapods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: cocoapods-${{ runner.os }}-
+
+      - name: Install pods
+        working-directory: ios
+        run: |
+          for attempt in 1 2 3; do
+            pod install && exit 0
+            echo "::warning::pod install failed (attempt $attempt/3); retrying in 30s."
+            sleep 30
+          done
+          exit 1
+
+      # Release config bundles the JS so the .app runs without Metro; simulator builds need no signing.
+      # arm64 only: AgoraReplayKitExtension (ScreenSharing target) has no usable x86_64 simulator slice.
+      - name: Build for simulator
+        run: |
+          xcodebuild \
+            -workspace ios/Zedu.xcworkspace \
+            -scheme Zedu \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 \
+            build
+
+      - name: Zip .app
+        run: |
+          cd ios/build/Build/Products/Release-iphonesimulator
+          ditto -c -k --sequesterRsrc --keepParent Zedu.app "$GITHUB_WORKSPACE/Zedu-simulator.zip"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-simulator
+          path: Zedu-simulator.zip
+          if-no-files-found: error
+          retention-days: 14

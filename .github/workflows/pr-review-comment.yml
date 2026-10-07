@@ -52,6 +52,17 @@ jobs:
           run-id: ${{ env.RUN_ID }}
           github-token: ${{ github.token }}
 
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        if: steps.results.outcome == 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Post check statuses
         if: steps.results.outcome == 'success'
         env:
@@ -60,7 +71,8 @@ jobs:
           [ -s "$FILE" ] || { echo "No results file; nothing to post."; exit 0; }
           # Every context any repo's PR checks or PR scans post; a name outside this list is dropped.
           allowed='["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Jest","PR review","Build","Semgrep","ClamAV","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"]'
-          current=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" --jq '.statuses[] | "\(.context)|\(.state)|\(.description)"' || true)
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
           jq -r --argjson ok "$allowed" '
             .checks[]?
             | select((.context | type) == "string" and (.context as $c | $ok | index($c)))
@@ -68,10 +80,11 @@ jobs:
                ((.description // "") | tostring | gsub("[^A-Za-z0-9 .,:;()/_-]"; "") | .[0:120])]
             | @tsv' "$FILE" |
           while IFS=$'\t' read -r context state desc; do
-            grep -qxF "$context|$state|$desc" <<< "$current" && continue
-            gh api "repos/$REPO/statuses/$HEAD_SHA" -f context="$context" -f state="$state" \
-              -f description="$desc" -f target_url="$RUN_URL" >/dev/null \
-              && echo "$context: $state" || echo "::warning::Couldn't post the $context status."
+            if status_set "$HEAD_SHA" "$context" "$state" "$desc" "$RUN_URL"; then
+              echo "$context: $state ($status_outcome)"
+            else
+              echo "::warning::Couldn't post the $context status."
+            fi
           done
 
       - name: Resolve PR number

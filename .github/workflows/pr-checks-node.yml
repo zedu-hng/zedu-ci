@@ -1,0 +1,227 @@
+name: PR checks (Node)
+
+# Reusable. Review-org replacement for Zedu's "PR pre-commit checks", "PR Review Bot", "Commitlint",
+# the file-policy / audit / gitleaks half of "Security checks" and the heuristics half of "Malware
+# scan" in an npm repo (zedu-mobile). Those workflows are disabled in zedu-hng (their files stay as
+# upstream, so syncs don't conflict); semgrep and ClamAV run in pr-scans.yml.
+#
+# One job: checkout and install once, run every check (each runs even if an earlier one fails).
+# Zedu's scripts and configs (verify-changed-files.sh, scan-malware.mjs, pr-review/) are called
+# unchanged, but from the base branch, so a PR can't loosen them for itself.
+#
+# Untrusted: runs PR code with a read-only token. It only uploads artifacts:
+#   pr-checks-results  per-check results; pr-review-comment.yml posts them as commit statuses
+#   pr-review-report   the review bot's report, posted as a PR comment by the same workflow
+#
+# Caller: .github/workflows/pr-checks.yml named "PR checks", on pull_request (opened, synchronize,
+# reopened, ready_for_review).
+# Caller permissions: contents: read.
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: "20"
+      jest:
+        description: Run `npx jest --ci` as the Jest check
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the base branch's check scripts
+        run: |
+          git fetch -q --no-tags origin "$BASE_REF"
+          for p in .github/scripts .github/pr-review.config.json .github/malware-scan.config.json .gitleaks.toml; do
+            if git cat-file -e "FETCH_HEAD:$p" 2>/dev/null; then
+              git checkout FETCH_HEAD -- "$p"
+            else
+              echo "::warning::$p isn't on $BASE_REF; using the PR's copy."
+            fi
+          done
+
+      # Checks that read the tree as the PR left it run before install (no node_modules to scan).
+      - name: File policy
+        id: file_policy
+        continue-on-error: true
+        run: bash .github/scripts/verify-changed-files.sh "origin/$BASE_REF" HEAD
+
+      - name: Gitleaks
+        id: gitleaks
+        continue-on-error: true
+        run: |
+          GITLEAKS_VERSION="8.24.2"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" gitleaks
+          # The final tree, then every commit in the PR: a secret added and deleted again within the PR
+          # is still in its history. Both scans run; either finding fails the check.
+          status=0
+          "$RUNNER_TEMP/gitleaks" detect --source . --no-git --config .gitleaks.toml --redact --no-banner || status=1
+          "$RUNNER_TEMP/gitleaks" detect --source . --log-opts "$BASE_SHA..$SHA" --config .gitleaks.toml --redact --no-banner || status=1
+          exit "$status"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Malware heuristics
+        id: heuristics
+        continue-on-error: true
+        run: node .github/scripts/scan-malware.mjs
+
+      - name: Install dependencies
+        id: install
+        run: npm ci
+
+      - name: Commit messages
+        id: commitlint
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: npx commitlint --from "$BASE_SHA" --to "$SHA" --verbose
+
+      - name: Dependency audit
+        id: audit
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          npm audit --audit-level moderate || true
+          npm audit --audit-level critical
+
+      - name: Prettier
+        id: prettier
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: npm run check-format
+
+      - name: ESLint
+        id: eslint
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: npm run check-lint
+
+      - name: TypeScript
+        id: types
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: npm run check-types
+
+      - name: Jest
+        id: jest
+        if: inputs.jest && steps.install.outcome == 'success'
+        continue-on-error: true
+        run: npx jest --ci
+
+      - name: PR review
+        id: review
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          node .github/scripts/pr-review/run.mjs \
+            --base "origin/$BASE_REF" \
+            --head HEAD \
+            --config .github/pr-review.config.json \
+            --output review-report.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pr-review-report
+          path: |
+            review-report.md
+            review-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Record results
+        if: always()
+        env:
+          JEST_ENABLED: ${{ inputs.jest }}
+          FILE_POLICY: ${{ steps.file_policy.outcome }}
+          GITLEAKS: ${{ steps.gitleaks.outcome }}
+          HEURISTICS: ${{ steps.heuristics.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
+          COMMITLINT: ${{ steps.commitlint.outcome }}
+          AUDIT: ${{ steps.audit.outcome }}
+          PRETTIER: ${{ steps.prettier.outcome }}
+          ESLINT: ${{ steps.eslint.outcome }}
+          TYPES: ${{ steps.types.outcome }}
+          JEST: ${{ steps.jest.outcome }}
+          REVIEW: ${{ steps.review.outcome }}
+        run: |
+          : > results.tsv
+          row() { # context outcome
+            local state desc
+            case "$2" in
+              success) state=success; desc="Passed" ;;
+              failure) state=failure; desc="Failed; see the PR checks run" ;;
+              skipped)
+                if [ "$INSTALL" != success ]; then state=failure; desc="Not run: dependency install failed"
+                else state=success; desc="Not needed for this event"; fi ;;
+              *) state=failure; desc="${2:-not run}" ;;
+            esac
+            printf '%s\t%s\t%s\n' "$1" "$state" "$desc" >> results.tsv
+          }
+          row "File policy" "$FILE_POLICY"
+          row "Gitleaks" "$GITLEAKS"
+          row "Malware heuristics" "$HEURISTICS"
+          row "Commit messages" "$COMMITLINT"
+          row "Dependency audit" "$AUDIT"
+          row "Prettier" "$PRETTIER"
+          row "ESLint" "$ESLINT"
+          row "TypeScript" "$TYPES"
+          if [ "$JEST_ENABLED" = true ]; then row "Jest" "$JEST"; fi
+          row "PR review" "$REVIEW"
+
+      # shared:publish-results begin
+      # Last, after every scan, so the scanners never see zedu-ci's files. Same in every checks
+      # workflow (Lint fails on drift).
+      - name: Check out zedu-ci scripts
+        if: always()
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      # pr-review-comment.yml reads this format.
+      - name: Publish results
+        if: always()
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .zedu-ci/scripts/publish-results.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pr-checks-results
+          path: pr-checks-results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail if a check failed
+        if: always()
+        run: |
+          [ "${fail:-1}" = 0 ] || { echo "::error::${fail:-Some} check(s) failed; see the summary above."; exit 1; }
+      # shared:publish-results end

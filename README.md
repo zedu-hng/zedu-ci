@@ -36,11 +36,63 @@ callers never ship upstream.
 
 `lead-approval-review.yml` stays a plain workflow in each repo: it only exists to fire the relay.
 
+### Checks and builds
+
+| File | What it does | Caller trigger |
+|---|---|---|
+| `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review (zedu-mobile) | `pull_request` |
+| `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
+| `pr-scans.yml` | Semgrep and ClamAV, with per-repo rule packs, paths and excludes | `pull_request` |
+| `fork-build.yml` | Relays the fork's PR build as `Fork build`, posts `Backend dependency`, comments the artifacts | `pull_request_target`, `issue_comment`, `workflow_dispatch`, `schedule` |
+| `pr-build-react-native.yml` | Fork side: Android APK and iOS simulator build (zedu-mobile) | `push`, `workflow_dispatch` in the fork |
+| `pr-build-flutter.yml` | Fork side: macOS, Windows and Linux builds (zedu-desktop) | `push`, `workflow_dispatch` in the fork |
+| `build-gate.yml` | Nested in both PR builds: open-PR check, backend and `.env` | called by the two files above |
+
+Checks run Zedu's own scripts and configs from the base branch, so a PR can't loosen them. Each
+check is posted as its own commit status by `pr-review-comment.yml`.
+
+## Backend for builds
+
+Every fork build talks to our dev backend, `api.hng.groups.zedu.chat`, unless the PR description has
+a line `Backend URL: https://api.<team>.groups.zedu.chat` (for a PR that needs backend work that isn't
+on dev yet). Then:
+
+- the build uses that backend, and `Backend dependency` stays red until the line is removed;
+- the fork's build jobs are named `<target> · <backend host>`, and Fork build fails when that host
+  doesn't match the PR description (the line changed after the build), until the fork rebuilds.
+
+`.env` is written from `build/<repo>.env` at the same zedu-ci commit as the workflow, with
+`{{backend}}` and `{{client}}` filled in. Public values only: anything in `.env` ships inside the app. Contributor forks
+need no `APP_ENV_FILE` or other setup.
+
 ## teams.yml
 
 One entry per team, keyed by the GitHub org that owns the team's forks (the same org for all three
 repos). See the comments in the file. Add a team or change leads with a PR here.
 
+## Shared code
+
+Shared shell code lives in `scripts/`, and every workflow that uses it checks this repo out at its
+own commit first (`ref: ${{ job.workflow_sha }}`, `path: .zedu-ci`), so the scripts are pinned with
+the workflow and need no second SHA in the callers:
+
+| Script | Used by |
+|---|---|
+| `lib/status.sh` (`status_set`: write a commit status only when it changes) | rules, lead approval, fork build, review comment |
+| `lib/teams.sh` (`team_of`, `team_orgs`; teams.yml read live from `main`) | team routing, lead approval, reviewer notify |
+| `lib/backend-url.sh` (`backend_from_body`) | build gate (fork side), fork build relay |
+| `lib/open-prs.sh` (`open_prs`: one GraphQL read of every open PR) | lead approval and fork build sweeps, reviewer notify, recheck |
+| `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
+
+In the checks workflows the checkout comes last, so the scanners never see zedu-ci's files. Whole
+jobs are shared as nested reusable workflows (`build-gate.yml`, called as
+`./.github/workflows/build-gate.yml`, which also resolves to the same commit).
+
+The steps around `publish-results.sh` (checkout, upload, fail) are still repeated YAML, marked
+`# shared:publish-results begin/end`; `scripts/check-shared-blocks.rb` fails Lint when the copies
+differ.
+
 ## Lint
 
-Every PR runs actionlint (with shellcheck) and parses the data files. CodeRabbit reviews every PR.
+Every PR runs actionlint (with shellcheck), shellcheck and `scripts/test.sh` on `scripts/`, the
+shared-block check, and a parse of the data files. CodeRabbit reviews every PR.

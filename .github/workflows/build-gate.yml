@@ -1,0 +1,99 @@
+name: Build gate
+
+# Reusable, called only by pr-build-react-native.yml and pr-build-flutter.yml (as
+# ./.github/workflows/build-gate.yml, so it always runs from the same zedu-ci commit as they do).
+# Runs in contributor forks.
+#
+# Decides whether the fork builds (only when the branch has an open PR into the review repo) and
+# which backend it talks to: `default_backend`, or the host on the PR body's
+# `Backend URL: https://api.<team>.groups.zedu.chat` line. Writes the .env from zedu-ci's
+# `env_template` (public values only), checked out at this workflow's own commit, with
+# {{backend}} and {{client}} filled in, base64-encoded for the build jobs.
+
+on:
+  workflow_call:
+    inputs:
+      default_backend:
+        type: string
+        required: true
+      env_template:
+        description: Path of the .env template in zedu-ci
+        type: string
+        required: true
+    outputs:
+      build:
+        description: "true when the branch has an open PR into the review repo"
+        value: ${{ jobs.gate.outputs.build }}
+      backend:
+        description: Backend host the build talks to
+        value: ${{ jobs.gate.outputs.backend }}
+      env:
+        description: The .env file, base64-encoded
+        value: ${{ jobs.gate.outputs.env }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Open PR check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.pr.outputs.build }}
+      backend: ${{ steps.pr.outputs.backend }}
+      env: ${{ steps.pr.outputs.env }}
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: |
+            scripts
+            build
+          persist-credentials: false
+
+      - id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_REPO: ${{ vars.REVIEW_REPO || format('zedu-hng/{0}', github.event.repository.name) }}
+          OWNER: ${{ github.repository_owner }}
+          BRANCH: ${{ github.ref_name }}
+          DEFAULT_BACKEND: ${{ inputs.default_backend }}
+          TEMPLATE: ${{ inputs.env_template }}
+        run: |
+          # Reviewers' branches in the review repo itself need no fork build (Fork build passes them).
+          if [ "$GITHUB_REPOSITORY" = "$REVIEW_REPO" ]; then
+            echo "::notice::Running in the review repo; no fork build needed."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr=$(gh api -X GET "repos/$REVIEW_REPO/pulls" -f state=open -f head="$OWNER:$BRANCH" --jq '.[0] // empty')
+          if [ -z "$pr" ]; then
+            echo "::notice::No open PR from $OWNER:$BRANCH into $REVIEW_REPO; skipping build. Open the PR, then run this workflow or push."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Open PR $REVIEW_REPO#$(jq -r .number <<< "$pr") from $OWNER:$BRANCH; building."
+
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/backend-url.sh
+          backend=$(backend_from_body "$(jq -r '.body // ""' <<< "$pr")")
+          if [ "$backend" = invalid ]; then
+            echo "::error::The PR's Backend URL line must look like https://api.<team>.groups.zedu.chat. Fix it or delete it, then re-run."
+            exit 1
+          fi
+          [ -n "$backend" ] || backend=$DEFAULT_BACKEND
+          client=${backend#api.}
+          echo "Backend: $backend (web client: $client)"
+
+          env_file=$(grep -vE '^[[:space:]]*(#|$)' ".zedu-ci/$TEMPLATE" | sed -e "s/{{backend}}/$backend/g" -e "s/{{client}}/$client/g")
+          {
+            echo "build=true"
+            echo "backend=$backend"
+            echo "env=$(base64 -w0 <<< "$env_file")"
+          } >> "$GITHUB_OUTPUT"
+
