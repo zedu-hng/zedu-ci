@@ -1,0 +1,155 @@
+name: Reviewer notify
+
+# Reusable. Maintains the ready-for-review queue for contributor PRs.
+# - A PR that is lead-approved and its Fork build passes is marked ready-for-review and the
+#   reviewers team is mentioned once, but only while its team has fewer than CAP unclaimed PRs
+#   waiting. Beyond that it is marked queued.
+# - A queued PR is promoted oldest-first as slots free (a PR is claimed, merged or closed).
+# - Claimed PRs keep the label (the claim sweep uses it) but don't occupy a slot.
+# - PRs that go back to draft or fail a gate lose the labels and re-queue later.
+# Reviewers are not assigned. Never checks out PR code.
+#
+# Every run re-evaluates the whole queue (a slot freed on one PR promotes another), so runs share one
+# concurrency group without cancelling: a burst of events collapses into one running and one pending
+# run, and the rest are dropped before they take a runner. One GraphQL query (about 2 points per 100
+# PRs) reads every open PR with its labels, assignees and statuses; per-PR REST status reads cost
+# ~260 calls a run and used up the repo's hourly API budget.
+# Triggers: PR events that change eligibility or slots, a Lead approval or Fork build run finishing
+# (their statuses decide "green", and a status write fires no event), and a 15-minute sweep.
+# Fork build runs started by a dispatch are ignored: those are its 3-minute re-checks, and the relay
+# dispatches this workflow itself when its result changes.
+
+# Caller: pull_request_target (ready_for_review, labeled, unlabeled, synchronize, reopened,
+# converted_to_draft, closed, assigned, unassigned), workflow_run on "Lead approval" and "Fork build"
+# (completed), schedule and workflow_dispatch. The concurrency group lives in the caller.
+# Caller permissions: contents: read, pull-requests: write, statuses: read.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  REPO: ${{ github.repository }}
+  CI_REPO: zedu-hng/zedu-ci
+  LEAD_CONTEXT: Lead approved
+  BUILD_CONTEXT: Fork build
+  REVIEW_LABEL: ready-for-review
+  QUEUED_LABEL: queued
+  REVIEWERS: zedu-hng/reviewers
+  CAP: "3"
+
+jobs:
+  notify:
+    name: Maintain ready-for-review queue
+    # Label events only matter for the labels this queue reads.
+    if: >-
+      !(github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Fork build' &&
+        github.event.workflow_run.event == 'workflow_dispatch') &&
+      (!contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) ||
+       contains(fromJSON('["ready-for-review", "queued", "sync", "hotfix"]'), github.event.label.name))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Load registered teams
+        run: |
+          gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
+          ruby -ryaml -e '
+            cfg = YAML.load_file("teams.yml") || {}
+            puts (cfg["teams"] || {}).keys
+          ' > teams.txt
+
+      - name: Collect PRs
+        run: |
+          set -o pipefail
+          # One paginated GraphQL read instead of two REST status calls per PR. pipefail: an API
+          # failure must fail the run, not read as "no PRs" and strip every label.
+          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
+          gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query='
+            query($owner: String!, $name: String!, $endCursor: String) {
+              repository(owner: $owner, name: $name) {
+                pullRequests(states: OPEN, first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    number createdAt isDraft baseRefName headRefOid
+                    headRepository { nameWithOwner }
+                    headRepositoryOwner { login }
+                    labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+                    assignees { totalCount }
+                    commits(last: 1) { nodes { commit { status { contexts { context state } } } } }
+                  }
+                }
+              }
+            }' |
+          jq -rs --arg repo "$REPO" '
+            [.[].data.repository.pullRequests.nodes[]]
+            | map(select((.baseRefName == "dev" or .baseRefName == "central-staging")
+                and .headRepository.nameWithOwner != $repo))
+            | .[]
+            # Over 100 labels: queue labels may be on a page we did not read, and leaving the PR out
+            # would miscount the slots of its team, so stop this run. Only reviewers can add labels.
+            | if .labels.pageInfo.hasNextPage then error("PR #\(.number) has over 100 labels; queue run stopped") else . end
+            | ([.commits.nodes[0].commit.status.contexts[]? | {(.context): .state}] | add // {}) as $st
+            | [.number, (.headRepositoryOwner.login // "deleted"), .createdAt, (.isDraft | tostring),
+               ([.labels.nodes[].name] | join(",")), (.assignees.totalCount | tostring),
+               ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""), .headRefOid]
+            | join("|")' > prs.txt
+          echo "$(wc -l < prs.txt) open contributor PRs"
+          : > rows.tsv
+          while IFS='|' read -r num owner created draft labels na lead build sha; do
+            case ",$labels," in *,sync,*|*,hotfix,*) continue ;; esac
+            green=false
+            if grep -qixF "$owner" teams.txt && [ "$lead" = SUCCESS ] && [ "$build" = SUCCESS ]; then
+              green=true
+            fi
+            printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
+              "$num" "$owner" "$created" "$draft" "$labels" "$na" "$green" "$sha" >> rows.tsv
+          done < prs.txt
+
+      - name: Maintain queue
+        run: |
+          declare -A waiting
+          while IFS='|' read -r _ team _ _ labels na _ _; do
+            case ",$labels," in *,"$REVIEW_LABEL",*) [ "$na" = "0" ] && waiting[$team]=$(( ${waiting[$team]:-0} + 1 )) ;; esac
+          done < rows.tsv
+          sort -s -t'|' -k3,3 rows.tsv | while IFS='|' read -r num team _ draft labels na green _; do
+            has_ready=false; case ",$labels," in *,"$REVIEW_LABEL",*) has_ready=true ;; esac
+            has_queued=false; case ",$labels," in *,"$QUEUED_LABEL",*) has_queued=true ;; esac
+            if [ "$draft" = "true" ] || [ "$green" != "true" ]; then
+              if [ "$has_ready" = true ]; then gh pr edit "$num" --remove-label "$REVIEW_LABEL" || true; fi
+              if [ "$has_queued" = true ]; then gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true; fi
+              echo "PR #$num ($team): not eligible (draft=$draft green=$green)"
+              continue
+            fi
+            if [ "$na" != "0" ]; then
+              echo "PR #$num ($team): claimed; not counted"
+              continue
+            fi
+            if [ "$has_ready" = true ]; then
+              echo "PR #$num ($team): already ready"
+              continue
+            fi
+            if [ "${waiting[$team]:-0}" -lt "$CAP" ]; then
+              if ! gh pr edit "$num" --add-label "$REVIEW_LABEL"; then
+                echo "PR #$num ($team): failed to add $REVIEW_LABEL" >&2
+                continue
+              fi
+              waiting[$team]=$(( ${waiting[$team]:-0} + 1 ))
+              if [ "$has_queued" = true ]; then gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true; fi
+              if gh pr comment "$num" --body "**Ready for review.** Lead approved and checks are green. @$REVIEWERS — claim this PR with \`/claim\`."; then
+                echo "PR #$num ($team): ready"
+              else
+                echo "PR #$num ($team): failed to notify reviewers" >&2
+              fi
+            else
+              if [ "$has_queued" != "true" ] && ! gh pr edit "$num" --add-label "$QUEUED_LABEL"; then
+                echo "PR #$num ($team): failed to add $QUEUED_LABEL" >&2
+              fi
+              echo "PR #$num ($team): queued"
+            fi
+          done

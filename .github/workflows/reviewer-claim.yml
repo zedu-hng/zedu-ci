@@ -1,0 +1,157 @@
+name: Reviewer claim
+
+# Reusable. Reviewers self-serve from the ready-for-review queue: comment /claim to take a PR, /release to
+# give it back. Only repo collaborators (the reviewers) can claim. A 15-minute sweep re-mentions a
+# PR left unclaimed for 24h (once), and releases a claim that has had no review for 24h.
+#
+# Trusted: runs on pull_request_target/issue_comment and never checks out PR code.
+
+# Caller: issue_comment (created), schedule and workflow_dispatch. The concurrency group lives in the
+# caller.
+# Caller permissions: contents: read, pull-requests: write, issues: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  REPO: ${{ github.repository }}
+  REVIEW_LABEL: ready-for-review
+  ESCALATED_LABEL: escalated-review
+  REVIEWERS_TEAM: zedu-hng/reviewers
+  STALE_HOURS: "24"
+
+jobs:
+  claim:
+    name: Claim or release
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Parse command
+        id: cmd
+        env:
+          BODY: ${{ github.event.comment.body }}
+          WHO: ${{ github.event.comment.user.login }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          body=$(printf '%s' "$BODY" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+          # First word, so "/claim on it" and "/release" both work.
+          # shellcheck disable=SC2086
+          set -- $body
+          action=none
+          case "$1" in
+            /claim) action=claim ;;
+            /release) action=release ;;
+          esac
+          {
+            echo "action=$action"
+            echo "who=$WHO"
+            echo "pr=$PR"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Authorize
+        id: auth
+        if: steps.cmd.outputs.action != 'none'
+        env:
+          WHO: ${{ steps.cmd.outputs.who }}
+        run: |
+          # The workflow token can't read org teams, so authorize by repo write access (reviewers).
+          perm=$(gh api "repos/$REPO/collaborators/$WHO/permission" --jq .permission 2>/dev/null || echo none)
+          case "$perm" in
+            admin|maintain|write) echo "ok=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "ok=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Reject non-reviewer
+        if: steps.cmd.outputs.action != 'none' && steps.auth.outputs.ok != 'true'
+        env:
+          WHO: ${{ steps.cmd.outputs.who }}
+          PR: ${{ steps.cmd.outputs.pr }}
+        run: gh pr comment "$PR" --body "Only reviewers can claim or release a PR. @$WHO isn't a reviewer."
+
+      - name: Apply
+        if: steps.cmd.outputs.action != 'none' && steps.auth.outputs.ok == 'true'
+        env:
+          PR: ${{ steps.cmd.outputs.pr }}
+          WHO: ${{ steps.cmd.outputs.who }}
+          ACTION: ${{ steps.cmd.outputs.action }}
+        run: |
+          assignees=$(gh api "repos/$REPO/pulls/$PR" --jq '[.assignees[].login] | join(",")')
+          if [ "$ACTION" = "claim" ]; then
+            labels=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name] | join(",")')
+            case ",$labels," in
+              *,"$REVIEW_LABEL",*) ;;
+              *)
+                gh pr comment "$PR" --body "This PR isn't in the ready-for-review queue yet; a team lead approves and the queue marks it ready first."
+                exit 0 ;;
+            esac
+            if [ -z "$assignees" ]; then
+              gh pr edit "$PR" --add-assignee "$WHO"
+              gh pr edit "$PR" --remove-label "$ESCALATED_LABEL" 2>/dev/null || true
+              gh pr comment "$PR" --body "Claimed by @$WHO. Comment \`/release\` to give it back."
+            elif [ "$assignees" = "$WHO" ]; then
+              gh pr comment "$PR" --body "@$WHO already claimed this PR."
+            else
+              gh pr comment "$PR" --body "Already claimed by @$(printf '%s' "$assignees" | sed 's/,/, @/g')."
+            fi
+          else
+            case ",$assignees," in
+              *,"$WHO",*)
+                gh pr edit "$PR" --remove-assignee "$WHO"
+                gh pr comment "$PR" --body "Released by @$WHO; back in the queue for anyone to claim." ;;
+              *)
+                gh pr comment "$PR" --body "@$WHO isn't assigned to this PR." ;;
+            esac
+          fi
+
+  sweep:
+    name: Escalate and release stale
+    if: github.event_name != 'issue_comment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sweep the ready-for-review queue
+        run: |
+          now=$(date +%s)
+          # The issues list already carries assignees and labels, so no per-PR fetch for them.
+          gh api --paginate "repos/$REPO/issues?state=open&labels=$REVIEW_LABEL&per_page=100" \
+            --jq '.[] | select(.pull_request) | "\(.number)|\([.assignees[].login] | join(","))|\([.labels[].name] | join(","))"' |
+          while IFS='|' read -r pr assignees labels; do
+            [ -n "$pr" ] || continue
+            if [ -z "$assignees" ]; then
+              case ",$labels," in *,"$ESCALATED_LABEL",*) echo "PR #$pr: already escalated"; continue ;; esac
+              labeled_at=$(gh api --paginate "repos/$REPO/issues/$pr/timeline?per_page=100" |
+                jq -s "[flatten[] | select(.event==\"labeled\" and .label.name==\"$REVIEW_LABEL\")] | last | .created_at // empty")
+              [ -n "$labeled_at" ] || continue
+              age=$(( now - $(date -d "$labeled_at" +%s) ))
+              if [ "$age" -ge $(( STALE_HOURS * 3600 )) ]; then
+                gh pr edit "$pr" --add-label "$ESCALATED_LABEL"
+                gh pr comment "$pr" --body "Still unclaimed after ${STALE_HOURS}h. @$REVIEWERS_TEAM please pick this up, or comment \`/claim\` to take it."
+                echo "PR #$pr: escalated"
+              fi
+            else
+              who=$(printf '%s' "$assignees" | cut -d, -f1)
+              claimed_at=$(gh api --paginate "repos/$REPO/issues/$pr/timeline?per_page=100" |
+                jq -s '[flatten[] | select(.event=="assigned")] | last | .created_at // empty')
+              [ -n "$claimed_at" ] || continue
+              claim_age=$(( now - $(date -d "$claimed_at" +%s) ))
+              if [ "$claim_age" -ge $(( STALE_HOURS * 3600 )) ]; then
+                reviewed=$(gh api --paginate "repos/$REPO/pulls/$pr/reviews?per_page=100" |
+                  jq -s "[flatten[] | select(.user.login==\"$who\")] | length")
+                if [ "$reviewed" = "0" ]; then
+                  gh pr edit "$pr" --remove-assignee "$who"
+                  gh pr comment "$pr" --body "Auto-released after ${STALE_HOURS}h with no review; back in the queue. @$who comment \`/claim\` if you're still on it."
+                  echo "PR #$pr: released stale claim by @$who"
+                fi
+              fi
+            fi
+          done

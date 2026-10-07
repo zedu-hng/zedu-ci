@@ -1,0 +1,84 @@
+# Bootcamp teams and their leads, shared by zedu-fe, zedu-mobile and zedu-desktop.
+# - Team routing requests review from the team's leads.
+# - Lead approval sets the "Lead approved" status once one of them approves.
+# - Reviewer notify reads the keys to know which forks are teams.
+# Workflows read this file from zedu-ci's main branch when they run, so a change here applies to every
+# repo at once, with no caller bump. A PR can't change its own mapping: it lives outside the PR's repo.
+#
+# A PR's team is the owner of its head fork (the org an intern forked into), matched to a key below
+# case-insensitively: a key must equal the fork org's login (e.g. zedu-flamingo). One org per team,
+# used for all three repos. A fork that isn't listed here isn't routed and can't be lead-approved.
+# Reviewers are NOT listed here: once a PR is lead-approved and its checks pass, Reviewer notify
+# mentions the reviewers team and any reviewer can claim the PR with /claim.
+#
+# teams:
+#   fork-owner-name:            # exactly the fork org's login, e.g. zedu-flamingo
+#     leads:                    # one or more; any one can approve, so a single absence isn't a blocker
+#       - lead-handle           # plain login, no @
+#
+# Teams are added as they register.
+
+teams:
+  Zedu-Weaver:
+    leads:
+      - omotomiwa26
+      - dayjigud
+  Zedu-Heron-HNG:
+    leads:
+      - dav3exe
+      - Chloetrini
+  zedu-flamingo:
+    leads:
+      - jenniferamanze
+      - thesongmartins
+  HNG-Tech-Team-Zedu-Puffin:
+    leads:
+      - gODtECH-Ctl-Create
+      - CharlesMisheal
+  zedu-Toucan-Team:
+    leads:
+      - nzube123
+      - cjaynduagwuike
+  zedu-kestrel:
+    leads:
+      - Fabito97
+      - yvnks
+  hng-zedu-macaw:
+    leads:
+      - onyx093
+      - somanie
+  Zedu-sparrow:
+    leads:
+      - abrahambishopcodes
+  zedu-osprey:
+    leads:
+      - Sodiqbinaliu
+      - Ekekwecharles
+  HNG-Zedu-Quetzal:
+    leads:
+      - Summiedev
+      - prince-tiwaa
+  zedu-lark:
+    leads:
+      - MiKKeYeLLi
+      - alexindevs
+  Zedu-Drongo:
+    leads:
+      - Goodnessmbakara
+      - MUFTIATBAKARE
+  zedu-condor:
+    leads:
+      - fiiwebarry
+      - Aniyikaye-Alabi
+  zedu-raven:
+    leads:
+      - Sage-25
+      - tinkerwkoko
+  HNG-ZEDU-EGRET:
+    leads:
+      - TrippleA001
+      - OKEKE-PRINCEWILL
+  zedu-ibis:
+    leads:
+      - solinkz
+      - Jhaemis-hack

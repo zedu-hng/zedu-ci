@@ -1,0 +1,227 @@
+name: Lead approval
+
+# Reusable. Sets the "Lead approved" commit status: green once one of the PR author's team leads has
+# an approving review, red otherwise. Reads zedu-ci's teams.yml, so a PR can't change it.
+#
+# A review on a fork PR runs with a read-only token and cannot set a status, so the caller's
+# lead-approval-relay.yml re-dispatches this right after a review, and a scheduled sweep re-dispatches
+# it for PRs that aren't green yet (both trusted, write-capable paths).
+#
+# Green without a lead review: sync/hotfix PRs, same-repo, bot and reviewer PRs, the `lead-verified`
+# label (a lead approved somewhere GitHub can't see), and a team's only lead opening their own PR
+# (Zedu review still applies). A lead's own PR otherwise needs another lead.
+#
+# Caller: .github/workflows/lead-approval.yml (that exact name: the sweep and relay dispatch it), on
+# pull_request_target (opened, synchronize, reopened, ready_for_review, labeled, unlabeled),
+# workflow_dispatch with inputs `pr` and `base_ref`, and schedule. Its per-PR concurrency group must
+# leave out labels this doesn't read, or adding one would cancel a check in progress.
+# Caller permissions: actions: write, contents: read, pull-requests: read, statuses: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  CI_REPO: zedu-hng/zedu-ci
+  CONTEXT: Lead approved
+
+jobs:
+  # Scheduled: re-dispatch the check for open contributor PRs whose status isn't green yet.
+  sweep:
+    name: Re-check pending PRs
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      pull-requests: read
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - run: |
+          # Re-check only contributor PRs whose status isn't green: each dispatch is a runner job on
+          # the org's shared 20, and a green PR can only turn red through a review (submitted, edited
+          # or dismissed), which lead-approval-relay.yml re-checks straight away, or a push, which
+          # runs this workflow anyway. One GraphQL read covers every PR and its status.
+          set -o pipefail
+          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
+          prs=$(gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query='
+            query($owner: String!, $name: String!, $endCursor: String) {
+              repository(owner: $owner, name: $name) {
+                pullRequests(states: OPEN, first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    number baseRefName
+                    headRepository { nameWithOwner }
+                    commits(last: 1) { nodes { commit { status { contexts { context state } } } } }
+                  }
+                }
+              }
+            }' | jq -rs --arg repo "$REPO" --arg ctx "$CONTEXT" '
+              [.[].data.repository.pullRequests.nodes[]][]
+              | select(.baseRefName == "dev" or .baseRefName == "central-staging")
+              | select(.headRepository.nameWithOwner != $repo)
+              | select(([.commits.nodes[0].commit.status.contexts[]? | select(.context == $ctx) | .state][0] // "") != "SUCCESS")
+              | "\(.number) \(.baseRefName)"') \
+            || { echo "::warning::Could not list open PRs (API error); skipping this sweep."; exit 0; }
+          echo "$(grep -c . <<< "$prs" || true) PRs without a green $CONTEXT"
+          while read -r number base_ref; do
+            [ -n "$number" ] || continue
+            echo "PR #$number: re-checking"
+            # Stop on the first failure (usually the installation rate limit) instead of firing
+            # the rest of the sweep into the same 403s.
+            if ! gh workflow run lead-approval.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" -f pr="$number" -f base_ref="$base_ref"; then
+              echo "::warning::Dispatch failed at PR #$number (likely rate limited); stopping this sweep."
+              break
+            fi
+          done <<< "$prs"
+
+  approval:
+    name: Check lead approval
+    # Label events only for the labels this reads.
+    if: >-
+      github.event_name != 'schedule' &&
+      (!contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) ||
+       contains(fromJSON('["lead-verified", "sync", "hotfix"]'), github.event.label.name))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve PR
+        id: pr
+        env:
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          INPUT_PR: ${{ github.event.inputs.pr }}
+        run: |
+          pr="$EVENT_PR"
+          [ -n "$pr" ] || pr="$INPUT_PR"
+          [[ "$pr" =~ ^[0-9]+$ ]] || { echo "No valid PR number; nothing to check."; exit 0; }
+          # One GraphQL read instead of six REST calls. This is the workflow's hot path and the
+          # installation token is shared across the whole repo, so the per-run request count matters.
+          owner=${REPO%/*}; name=${REPO#*/}
+          attempt=0
+          # shellcheck disable=SC2016 # $owner etc. are GraphQL variables, not shell
+          until data=$(gh api graphql -f query='
+            query($owner: String!, $name: String!, $pr: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $pr) {
+                  headRefOid
+                  author { login }
+                  headRepository { name owner { login } }
+                  labels(first: 100) { nodes { name } }
+                }
+              }
+            }' -f owner="$owner" -f name="$name" -F pr="$pr" \
+            --jq '.data.repository.pullRequest | {
+              sha: .headRefOid,
+              author: (.author.login // ""),
+              head_repo: (if .headRepository then (.headRepository.owner.login + "/" + .headRepository.name) else "" end),
+              head_owner: (if .headRepository then .headRepository.owner.login else "" end),
+              labels: ([.labels.nodes[].name] | join(","))
+            }'); do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 3 ]; then
+              echo "::warning::Could not resolve PR #$pr after $attempt attempts (API error); leaving the status unchanged."
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          {
+            echo "number=$pr"
+            jq -r '"sha=\(.sha)", "author=\(.author)", "head_repo=\(.head_repo)", "head_owner=\(.head_owner)", "labels=\(.labels)"' <<< "$data"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve leads
+        id: leads
+        if: steps.pr.outputs.number != '' && steps.pr.outputs.head_owner != ''
+        env:
+          HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
+        run: |
+          gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/teams.yml?ref=main" > teams.yml
+          ruby -ryaml -e '
+            cfg = YAML.load_file("teams.yml") || {}
+            owner = ENV.fetch("HEAD_OWNER", "").downcase
+            name, team = (cfg["teams"] || {}).find { |k, _| k.to_s.downcase == owner }
+            if team
+              puts "mapped=true"
+              puts "leads=#{Array(team["leads"]).join(",")}"
+            else
+              puts "mapped=false"
+            end
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Set status
+        if: steps.pr.outputs.number != ''
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          AUTHOR: ${{ steps.pr.outputs.author }}
+          HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
+          HEAD_OWNER: ${{ steps.pr.outputs.head_owner }}
+          MAPPED: ${{ steps.leads.outputs.mapped }}
+          LEADS: ${{ steps.leads.outputs.leads }}
+          LABELS: ${{ steps.pr.outputs.labels }}
+        run: |
+          set -o pipefail
+          # "state|description" for this PR. API failures fail the step: a refused call must never
+          # read as "no approvals".
+          decide() {
+            case ",$LABELS," in
+              *,sync,*|*,hotfix,*) echo "success|Sync/hotfix PR; lead approval not enforced"; return ;;
+            esac
+            if [ "$HEAD_REPO" = "$REPO" ]; then echo "success|Same-repo PR; lead approval not enforced"; return; fi
+            case "$AUTHOR" in
+              *\[bot\]|github-actions) echo "success|Bot PR; lead approval not enforced"; return ;;
+            esac
+            # Reviewers (write access) open setup PRs from personal forks.
+            local perm
+            perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission) || return 1
+            case "$perm" in
+              admin|maintain|write) echo "success|Reviewer PR; lead approval not enforced"; return ;;
+            esac
+            case ",$LABELS," in
+              *,lead-verified,*) echo "success|Lead approval verified by a reviewer (lead-verified label)"; return ;;
+            esac
+            if [ -z "$HEAD_OWNER" ]; then echo "failure|Fork was deleted; reopen this PR from your team's org fork"; return; fi
+            if [ "$MAPPED" != true ]; then
+              if [ "${HEAD_OWNER,,}" = "${AUTHOR,,}" ]; then
+                echo "failure|Personal fork. Open this PR from your team's org fork, not $HEAD_OWNER/"; return
+              fi
+              echo "failure|Fork org $HEAD_OWNER isn't registered. Ask a reviewer to add it to zedu-ci teams.yml"; return
+            fi
+            # Leads other than the author: a lead's own PR needs another lead, and a team's only lead
+            # opening their own PR is waived (Zedu review still applies).
+            local leads approved hit
+            leads=$(tr ',' '\n' <<< "$LEADS" | grep -v '^$' | grep -vixF "$AUTHOR" || true)
+            if [ -z "$leads" ]; then
+              if tr ',' '\n' <<< "$LEADS" | grep -qixF "$AUTHOR"; then
+                echo "success|Team's only lead opened this PR; Zedu review applies"; return
+              fi
+              echo "failure|Team $HEAD_OWNER has no leads in zedu-ci teams.yml"; return
+            fi
+            # The effective review state per person is their latest non-comment review, across all pages.
+            # gh can't combine --slurp with --jq, so the pages are piped into jq.
+            approved=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" \
+              | jq -r 'flatten | map(select(.state != "COMMENTED" and .state != "PENDING")) | group_by(.user.login | ascii_downcase) | map(.[-1]) | map(select(.state == "APPROVED")) | .[].user.login') || return 1
+            # Logins are case-insensitive on GitHub; teams.yml is typed by hand.
+            hit=$(grep -Fxif <(printf '%s\n' "$leads") <<< "$approved" | head -1 || true)
+            echo "Leads: $(paste -sd' ' - <<< "$leads"). Approvals: $(paste -sd' ' - <<< "$approved")" >&2
+            if [ -n "$hit" ]; then
+              echo "success|Approved by team lead @$hit"
+            else
+              echo "failure|Waiting for a team lead to approve: @$(paste -sd' ' - <<< "$leads" | sed 's/ / @/g')"
+            fi
+          }
+          result=$(decide) || { echo "::warning::API error deciding PR #$PR; leaving the status unchanged."; exit 0; }
+          state=${result%%|*}; desc=${result#*|}; desc=${desc:0:140}
+          # Write only on change: GitHub caps statuses per commit and context.
+          current=$(gh api "repos/$REPO/commits/$SHA/status" | jq -r --arg c "$CONTEXT" \
+            '[.statuses[] | select(.context == $c)][0] // empty | "\(.state)|\(.description)"' || true)
+          if [ "$current" = "$state|$desc" ]; then echo "PR #$PR: unchanged ($state: $desc)"; exit 0; fi
+          gh api "repos/$REPO/statuses/$SHA" -f state="$state" -f context="$CONTEXT" -f description="$desc" >/dev/null
+          echo "PR #$PR: $state: $desc"
