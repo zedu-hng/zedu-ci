@@ -63,5 +63,28 @@ check "teams: found, case-insensitive" $'found=true\nteam=Zedu-Flamingo\nleads=a
 check "teams: not found" "found=false" "$(team_of nobody)"
 check "teams: orgs" $'Zedu-Flamingo\nother' "$(team_orgs)"
 
+# open_prs: a good response, a response without repository data (exit 0), and an API failure.
+# shellcheck source=scripts/lib/open-prs.sh
+source scripts/lib/open-prs.sh
+sleep() { :; }
+CALLS=$(mktemp)
+gh() {
+  echo call >> "$CALLS"
+  case "$GH_MODE" in
+    good) printf '%s\n' '{"data":{"repository":{"pullRequests":{"nodes":[{"number":1},{"number":2}]}}}}' ;;
+    null) printf '%s\n' '{"data":{"repository":null},"errors":[{"message":"partial"}]}' ;;
+    fail) return 1 ;;
+  esac
+}
+GH_MODE=good; : > "$CALLS"
+check "open_prs: good response" "2" "$(open_prs 2>/dev/null | jq length)"
+for mode in null fail; do
+  GH_MODE=$mode; : > "$CALLS"
+  if open_prs >/dev/null 2>&1; then got=0; else got=1; fi
+  check "open_prs: $mode response fails" "1" "$got"
+  check "open_prs: $mode response retried once" "2" "$(grep -c . "$CALLS")"
+done
+rm -f "$CALLS"
+
 rm -f "$WRITES" "$READS"
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }

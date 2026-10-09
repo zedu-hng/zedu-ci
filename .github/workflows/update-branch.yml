@@ -58,7 +58,7 @@ jobs:
           # shellcheck disable=SC2016 # jq programs use $name variables inside single quotes
           # shellcheck source=/dev/null
           source .zedu-ci/scripts/lib/open-prs.sh
-          open_prs > prs.json || { echo "::error::Couldn't list open PRs (API error)."; exit 1; }
+          open_prs_merge_state > prs.json || { echo "::error::Couldn't list open PRs (API error)."; exit 1; }
 
           # One row per behind PR: number, fork owner, author, base.
           jq -r --arg repo "$REPO" '

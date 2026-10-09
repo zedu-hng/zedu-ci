@@ -88,7 +88,7 @@ the workflow and need no second SHA in the callers:
 | `lib/teams.sh` (`team_of`, `team_orgs`; teams.yml read live from `main`) | team routing, lead approval, reviewer notify |
 | `lib/backend-url.sh` (`backend_from_body`) | build gate (fork side), fork build relay |
 | `lib/docs-only.sh` (`docs_only`: a Markdown-only PR needs no build) | build gate (fork side), fork build relay |
-| `lib/open-prs.sh` (`open_prs`, `open_prs_with_review_state`: one GraphQL read of every open PR) | lead approval and fork build sweeps, reviewer notify, recheck, pr nudges, update branch |
+| `lib/open-prs.sh` (`open_prs`, `open_prs_merge_state`, `open_prs_with_review_state`: paginated GraphQL reads of every open PR, small pages, one retry) | lead approval and fork build sweeps, reviewer notify, recheck, update-branch, pr-nudges |
 | `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
 
 In the checks workflows the checkout comes last, so the scanners never see zedu-ci's files. Whole
