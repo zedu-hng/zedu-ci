@@ -11,7 +11,8 @@ name: PR rules
 #   Blocked unless a reviewer adds the `config-change-approved` label. A rename counts its old path.
 # - Size: at most ~`size_limit` changed lines (`size_exclude` paths don't count). Reviewers can apply
 #   the `size-override` label to allow a larger PR.
-# - PR title: <type>(<ticket-id>): <summary>, with the ticket matching the branch.
+# - PR title: <type>(<ticket-id>): <summary>, with the ticket and the conventional type matching the
+#   branch (a feat/ branch must be feat(...), not chore(...)).
 # - PR template: every checkbox in the caller's `template` (read from the base branch) must be ticked.
 # Sync and promotion PRs (label `sync`, head dev/central-staging or upstream main/staging) are
 # waived here. Hotfix PRs (label `hotfix`) skip only size; branch/author/protected still run.
@@ -260,17 +261,31 @@ jobs:
 
           if wants title; then
             bnum=$(printf '%s' "$HEAD_REF" | grep -oE '[0-9]+' | head -1 || true)
+            btype=""
+            [[ "$HEAD_REF" =~ ^([a-z]+)/ ]] && btype="${BASH_REMATCH[1]}"
             if [ "$sync" = true ]; then waived "PR title"
-            elif ! [[ "$TITLE" =~ ^[a-z]+\(([A-Za-z]*-)?([0-9]+)\):[[:space:]]+(.+)$ ]]; then
+            elif ! [[ "$TITLE" =~ ^([a-z]+)\(([A-Za-z]*-)?([0-9]+)\):[[:space:]]+(.+)$ ]]; then
               if [ "$reviewer" = true ]; then report "PR title" success "Not <type>(<ticket-id>): <summary>; allowed for a reviewer"
               else
                 echo "::error::PR title must be <type>(<ticket-id>): <summary>, e.g. fix(CHAT-142): clear the typing indicator."
                 report "PR title" failure "Title must be <type>(<ticket-id>): <summary>, e.g. fix(CHAT-142): clear the typing indicator"
               fi
             else
-              tnum="${BASH_REMATCH[2]}"
-              if [ -z "$bnum" ]; then report "PR title" success "OK (branch has no ticket number to match)"
-              elif [ "$bnum" = "$tnum" ]; then report "PR title" success "OK: ticket $tnum matches the branch"
+              ttype="${BASH_REMATCH[1]}"; tnum="${BASH_REMATCH[3]}"
+              # A conventional branch type must be the same conventional type in the title, so a
+              # feat/ branch can't land as a chore(...) commit. Branch types without a conventional
+              # equivalent (hotfix, security) are not compared. Reviewers are exempt, like the rest.
+              case "$btype" in
+                feat|fix|test|docs|refactor|chore|perf)
+                  if [ "$reviewer" = true ] || [ "$ttype" = "$btype" ]; then type_ok=true
+                  else type_ok=false; fi ;;
+                *) type_ok=true ;;
+              esac
+              if [ "$type_ok" != true ]; then
+                echo "::error::PR title type '$ttype' doesn't match the branch type '$btype'. A '$btype/...' branch must use '$btype(...): ...'."
+                report "PR title" failure "Title type $ttype doesn't match branch type $btype"
+              elif [ -z "$bnum" ]; then report "PR title" success "OK: type $ttype (branch has no ticket number to match)"
+              elif [ "$bnum" = "$tnum" ]; then report "PR title" success "OK: type $ttype, ticket $tnum matches the branch"
               elif [ "$reviewer" = true ]; then report "PR title" success "Ticket $tnum doesn't match branch $bnum; allowed for a reviewer"
               else
                 echo "::error::PR title ticket '$tnum' doesn't match the branch ticket '$bnum'. Use the same ticket as your branch name."
