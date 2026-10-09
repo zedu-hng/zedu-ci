@@ -80,7 +80,8 @@ jobs:
             # Throttle per PR: the marker comment's updated_at bounds attempts.
             # shellcheck disable=SC2016 # $m is a jq variable
             existing=$(gh api --paginate "repos/$REPO/issues/$num/comments?per_page=100" \
-              --jq --arg m "$MARKER" '.[] | select(.body | contains($m)) | "\(.id) \(.updated_at)"' | tail -1)
+              | jq -r --arg m "$MARKER" '.[] | select(.body | contains($m)) | "\(.id) \(.updated_at)"' \
+              | tail -1)
             id=""
             if [ -n "$existing" ]; then
               id=${existing%% *}; updated=${existing#* }
