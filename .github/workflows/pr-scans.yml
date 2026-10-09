@@ -26,6 +26,10 @@ on:
         description: Space-separated directory patterns ClamAV skips (.git is always skipped)
         type: string
         default: node_modules
+      semgrep_version:
+        description: Semgrep CLI version installed from PyPI
+        type: string
+        default: "1.180.0"
 
 permissions:
   contents: read
@@ -48,12 +52,19 @@ jobs:
         env:
           CONFIGS: ${{ inputs.semgrep_configs }}
           PATHS: ${{ inputs.semgrep_paths }}
+          SEMGREP_VERSION: ${{ inputs.semgrep_version }}
         run: |
           read -ra configs <<< "$CONFIGS"
           read -ra paths <<< "$PATHS"
           args=()
           for c in "${configs[@]}"; do args+=(--config "$c"); done
-          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep semgrep scan \
+          # Install the CLI from PyPI in a venv rather than `docker run semgrep/semgrep`: the image
+          # is pulled anonymously and the runner hits Docker Hub's unauthenticated rate limit
+          # ("toomanyrequests"), which failed the scan before it ran. The version is pinned so results
+          # are reproducible. venv avoids PEP 668 on the runner's system Python.
+          python3 -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --quiet "semgrep==$SEMGREP_VERSION"
+          "$RUNNER_TEMP/semgrep/bin/semgrep" scan \
             "${args[@]}" --error --metrics off "${paths[@]}"
 
       - name: ClamAV
