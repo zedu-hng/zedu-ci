@@ -21,7 +21,10 @@ _open_prs_query() {
       }
     }"
   for attempt in 1 2; do
-    if pages=$(gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query="$query"); then
+    # The parse is part of the attempt: a response without repository data (a partial GraphQL
+    # error can exit 0) fails jq, is retried, and finally returns 1 rather than an empty list.
+    if pages=$(gh api graphql --paginate -F owner="${REPO%%/*}" -F name="${REPO#*/}" -f query="$query") \
+       && jq -se 'all(.[]; .data.repository.pullRequests.nodes | type == "array")' <<< "$pages" >/dev/null; then
       jq -s '[.[].data.repository.pullRequests.nodes[]]' <<< "$pages"
       return 0
     fi
