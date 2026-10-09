@@ -93,8 +93,10 @@ jobs:
           # The claimer is recorded in a hidden marker on the bot's claim comment: a label can't hold
           # a login, and the assignee list now holds the PR's author.
           claimer() { # <pr>
+            # Only the workflow bot's comments are trusted, so a user can't fake a claim marker.
             gh api --paginate "repos/$REPO/issues/$1/comments?per_page=100" \
-              --jq '.[] | select(.body | contains("<!-- zedu-claim:"))
+              --jq '.[] | select(.user.login == "github-actions[bot]")
+                    | select(.body | contains("<!-- zedu-claim:"))
                     | .body | capture("<!-- zedu-claim:(?<who>[A-Za-z0-9-]+) -->").who' \
               | tail -1
           }
@@ -112,8 +114,13 @@ jobs:
             else
               gh pr edit "$PR" --add-label "$CLAIMED_LABEL"
               gh pr edit "$PR" --remove-label "$ESCALATED_LABEL" 2>/dev/null || true
-              gh pr comment "$PR" --body "Claimed by @$WHO. Comment \`/release\` to give it back.
-              <!-- zedu-claim:$WHO -->"
+              if ! gh pr comment "$PR" --body "Claimed by @$WHO. Comment \`/release\` to give it back.
+              <!-- zedu-claim:$WHO -->"; then
+                # A claimed label with no marker would look claimed but have no claimer; roll back.
+                gh pr edit "$PR" --remove-label "$CLAIMED_LABEL"
+                echo "::error::Couldn't record the claim comment; removed the $CLAIMED_LABEL label."
+                exit 1
+              fi
             fi
           elif has "$labels" "$CLAIMED_LABEL"; then
             current=$(claimer "$PR")
@@ -138,8 +145,10 @@ jobs:
           now=$(date +%s)
           has() { case ",$1," in *,"$2",*) return 0 ;; esac; return 1; }
           claimer() { # <pr>
+            # Only the workflow bot's comments are trusted, so a user can't fake a claim marker.
             gh api --paginate "repos/$REPO/issues/$1/comments?per_page=100" \
-              --jq '.[] | select(.body | contains("<!-- zedu-claim:"))
+              --jq '.[] | select(.user.login == "github-actions[bot]")
+                    | select(.body | contains("<!-- zedu-claim:"))
                     | .body | capture("<!-- zedu-claim:(?<who>[A-Za-z0-9-]+) -->").who' \
               | tail -1
           }
