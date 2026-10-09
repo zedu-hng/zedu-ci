@@ -57,19 +57,21 @@ jobs:
             || { echo "::error::Couldn't list open PRs (API error)."; exit 1; }
           now=$(date +%s)
 
-          # Edit the PR's existing nudge comment for this kind, or post one; refresh only after
-          # THROTTLE_HOURS since it last changed.
-          nudge() { # pr mentions kind message
-            local pr=$1 mentions=$2 kind=$3 message=$4
-            local marker="<!-- zedu-nudge:$kind -->" existing id updated age body
+          # Edit the PR's existing nudge comment, or post one; refresh only after THROTTLE_HOURS since
+          # it last changed. One comment per PR combines every reason, so a PR with both unresolved
+          # threads and a conflict gets one nudge and one set of mentions per window.
+          nudge() { # pr message
+            local pr=$1 message=$2
+            local marker="<!-- zedu-nudge -->" existing id updated age body
             # shellcheck disable=SC2016 # $m is a jq variable
             existing=$(gh api --paginate "repos/$REPO/issues/$pr/comments?per_page=100" \
-              --jq --arg m "$marker" '.[] | select(.body | contains($m)) | "\(.id) \(.updated_at)"' | tail -1)
+              | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | "\(.id) \(.updated_at)"' \
+              | tail -1)
             if [ -n "$existing" ]; then
               id=${existing%% *}; updated=${existing#* }
               age=$(( now - $(date -d "$updated" +%s) ))
               if [ "$age" -lt $(( THROTTLE_HOURS * 3600 )) ]; then
-                echo "PR #$pr: $kind nudge is fresh (${age}s < $(( THROTTLE_HOURS * 3600 ))s)"
+                echo "PR #$pr: nudge is fresh (${age}s < $(( THROTTLE_HOURS * 3600 ))s)"
                 return 0
               fi
             fi
@@ -77,10 +79,10 @@ jobs:
             $marker"
             if [ -n "$existing" ]; then
               gh api -X PATCH "repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
-              echo "PR #$pr: refreshed the $kind nudge"
+              echo "PR #$pr: refreshed the nudge"
             else
               gh api -X POST "repos/$REPO/issues/$pr/comments" -f body="$body" >/dev/null
-              echo "PR #$pr: posted the $kind nudge"
+              echo "PR #$pr: posted the nudge"
             fi
           }
 
@@ -115,10 +117,14 @@ jobs:
             mentions="@$author"
             # shellcheck disable=SC2086 # one @mention per lead
             for handle in $handles; do [ "$handle" = "$author" ] || mentions="$mentions @$handle"; done
+            reasons=""
             if [ "$unresolved" -gt 0 ]; then
-              nudge "$num" "$mentions" "threads" "This PR has $unresolved unresolved review thread(s). $mentions — please resolve them before this merges."
+              reasons="$unresolved unresolved review thread(s)"
             fi
             if [ "$mergeable" = "CONFLICTING" ]; then
-              nudge "$num" "$mentions" "conflict" "This PR has merge conflicts with its base. $mentions — please update the branch or resolve the conflicts."
+              [ -n "$reasons" ] && reasons="$reasons and "
+              reasons="${reasons}merge conflicts with the base"
             fi
+            [ -n "$reasons" ] || continue
+            nudge "$num" "This PR has $reasons. $mentions — please resolve before this merges."
           done < nudges.txt
