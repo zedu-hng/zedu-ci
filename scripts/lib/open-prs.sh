@@ -4,9 +4,9 @@
 #
 #   open_prs
 #     Prints a JSON array of pullRequest nodes: number, createdAt, isDraft, baseRefName, headRefOid,
-#     headRepository.nameWithOwner, headRepositoryOwner.login, labels (first 100, with pageInfo),
-#     assignees.totalCount, and the head commit's status contexts (context, state, description).
-#     Fails on an API error: a refused call must never read as "no PRs".
+#     author.login, headRepository.nameWithOwner, headRepositoryOwner.login, labels (first 100, with
+#     pageInfo), assignees.totalCount, mergeStateStatus, and the head commit's status contexts
+#     (context, state, description). Fails on an API error: a refused call must never read as "no PRs".
 
 open_prs() {
   local pages
@@ -18,10 +18,12 @@ open_prs() {
           pageInfo { hasNextPage endCursor }
           nodes {
             number createdAt isDraft baseRefName headRefOid
+            author { login }
             headRepository { nameWithOwner }
             headRepositoryOwner { login }
             labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
             assignees { totalCount }
+            mergeStateStatus
             commits(last: 1) { nodes { commit { status { contexts { context state description } } } } }
           }
         }
