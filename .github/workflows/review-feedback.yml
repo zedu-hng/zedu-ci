@@ -22,6 +22,7 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
   REPO: ${{ github.repository }}
   CI_REPO: zedu-hng/zedu-ci
   CHANGES_LABEL: changes-requested
