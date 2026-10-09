@@ -5,24 +5,25 @@ name: Reviewer notify
 #   reviewers team is mentioned once, but only while its team has fewer than CAP unclaimed PRs
 #   waiting. Beyond that it is marked queued.
 # - A queued PR is promoted oldest-first as slots free (a PR is claimed, merged or closed).
-# - Claimed PRs keep the label (the claim sweep uses it) but don't occupy a slot. If a push clears
-#   the label while a new head is re-checked, it is restored once the PR is green again.
+# - A claim is the `claimed` label (reviewer-claim adds it), not an assignee: every PR is assigned
+#   to its author. A claimed PR keeps the label but doesn't occupy a slot. If a push clears the
+#   ready label while a new head is re-checked, it is restored once the PR is green again.
 # - PRs that go back to draft or fail a gate lose the labels and re-queue later.
-# Reviewers are not assigned. Never checks out PR code.
+# The author is assigned; reviewers claim with a label. Never checks out PR code.
 #
 # Every run re-evaluates the whole queue (a slot freed on one PR promotes another), so runs share one
 # concurrency group without cancelling: a burst of events collapses into one running and one pending
 # run, and the rest are dropped before they take a runner. One GraphQL query (about 2 points per 100
-# PRs) reads every open PR with its labels, assignees and statuses; per-PR REST status reads cost
-# ~260 calls a run and used up the repo's hourly API budget.
+# PRs) reads every open PR with its labels and statuses; per-PR REST status reads cost ~260 calls a
+# run and used up the repo's hourly API budget.
 # Triggers: PR events that change eligibility or slots, a Lead approval or Fork build run finishing
 # (their statuses decide "green", and a status write fires no event), and a 15-minute sweep.
 # Fork build runs started by a dispatch are ignored: those are its 3-minute re-checks, and the relay
 # dispatches this workflow itself when its result changes.
 
 # Caller: pull_request_target (ready_for_review, labeled, unlabeled, synchronize, reopened,
-# converted_to_draft, closed, assigned, unassigned), workflow_run on "Lead approval" and "Fork build"
-# (completed), schedule and workflow_dispatch. The concurrency group lives in the caller.
+# converted_to_draft, closed), workflow_run on "Lead approval" and "Fork build" (completed), schedule
+# and workflow_dispatch. The concurrency group lives in the caller.
 # Caller permissions: contents: read, pull-requests: write, statuses: read.
 
 on:
@@ -42,6 +43,7 @@ env:
   BUILD_CONTEXT: Fork build
   REVIEW_LABEL: ready-for-review
   QUEUED_LABEL: queued
+  CLAIMED_LABEL: claimed
   REVIEWERS: zedu-hng/reviewers
   CAP: "3"
 
@@ -53,7 +55,7 @@ jobs:
       !(github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Fork build' &&
         github.event.workflow_run.event == 'workflow_dispatch') &&
       (!contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) ||
-       contains(fromJSON('["ready-for-review", "queued", "sync", "hotfix"]'), github.event.label.name))
+       contains(fromJSON('["ready-for-review", "queued", "claimed", "sync", "hotfix"]'), github.event.label.name))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -90,38 +92,42 @@ jobs:
             | if .labels.pageInfo.hasNextPage then error("PR #\(.number) has over 100 labels; queue run stopped") else . end
             | ([.commits.nodes[0].commit.status.contexts[]? | {(.context): .state}] | add // {}) as $st
             | [.number, (.headRepositoryOwner.login // "deleted"), .createdAt, (.isDraft | tostring),
-               ([.labels.nodes[].name] | join(",")), (.assignees.totalCount | tostring),
+               ([.labels.nodes[].name] | join(",")),
                ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""), .headRefOid]
             | join("|")' > prs.txt
           echo "$(wc -l < prs.txt) open contributor PRs"
           : > rows.tsv
-          while IFS='|' read -r num owner created draft labels na lead build sha; do
+          while IFS='|' read -r num owner created draft labels lead build sha; do
             case ",$labels," in *,sync,*|*,hotfix,*) continue ;; esac
             green=false
             if grep -qixF "$owner" teams.txt && [ "$lead" = SUCCESS ] && [ "$build" = SUCCESS ]; then
               green=true
             fi
-            printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
-              "$num" "$owner" "$created" "$draft" "$labels" "$na" "$green" "$sha" >> rows.tsv
+            printf '%s|%s|%s|%s|%s|%s|%s\n' \
+              "$num" "$owner" "$created" "$draft" "$labels" "$green" "$sha" >> rows.tsv
           done < prs.txt
 
       - name: Maintain queue
         run: |
           declare -A waiting
-          while IFS='|' read -r _ team _ _ labels na _ _; do
-            case ",$labels," in *,"$REVIEW_LABEL",*) [ "$na" = "0" ] && waiting[$team]=$(( ${waiting[$team]:-0} + 1 )) ;; esac
+          while IFS='|' read -r _ team _ _ labels _ _; do
+            case ",$labels," in
+              *,"$REVIEW_LABEL",*)
+                case ",$labels," in *,"$CLAIMED_LABEL",*) ;; *) waiting[$team]=$(( ${waiting[$team]:-0} + 1 )) ;; esac ;;
+            esac
           done < rows.tsv
-          sort -s -t'|' -k3,3 rows.tsv | while IFS='|' read -r num team _ draft labels na green _; do
+          sort -s -t'|' -k3,3 rows.tsv | while IFS='|' read -r num team _ draft labels green _; do
             has_ready=false; case ",$labels," in *,"$REVIEW_LABEL",*) has_ready=true ;; esac
             has_queued=false; case ",$labels," in *,"$QUEUED_LABEL",*) has_queued=true ;; esac
+            has_claimed=false; case ",$labels," in *,"$CLAIMED_LABEL",*) has_claimed=true ;; esac
             if [ "$draft" = "true" ] || [ "$green" != "true" ]; then
               if [ "$has_ready" = true ]; then gh pr edit "$num" --remove-label "$REVIEW_LABEL" || true; fi
               if [ "$has_queued" = true ]; then gh pr edit "$num" --remove-label "$QUEUED_LABEL" || true; fi
               echo "PR #$num ($team): not eligible (draft=$draft green=$green)"
               continue
             fi
-            if [ "$na" != "0" ]; then
-              # Claimed: a push can clear the label while its new head is re-checked, and the
+            if [ "$has_claimed" = true ]; then
+              # Claimed: a push can clear the ready label while its new head is re-checked, and the
               # claim sweep then loses sight of the PR. Restore it, but don't count a slot.
               if [ "$has_ready" != true ] && ! gh pr edit "$num" --add-label "$REVIEW_LABEL"; then
                 echo "PR #$num ($team): failed to add $REVIEW_LABEL" >&2
