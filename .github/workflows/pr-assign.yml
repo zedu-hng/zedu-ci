@@ -1,0 +1,43 @@
+name: PR assign
+
+# Reusable. Assigns a contributor PR to its author, so every PR has an owner. Reviewers claim a PR
+# from the ready-for-review queue with the `claimed` label (reviewer-claim), not the assignee list,
+# so the author holding the assignee slot doesn't read as a claim.
+#
+# Caller: pull_request_target (opened, reopened, ready_for_review).
+# Caller permissions: contents: read, pull-requests: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  PR: ${{ github.event.pull_request.number }}
+  AUTHOR: ${{ github.event.pull_request.user.login }}
+
+jobs:
+  assign:
+    name: Assign the author
+    # Draft PRs get assigned when they become ready (ready_for_review).
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assign
+        run: |
+          case "$AUTHOR" in
+            *\[bot\]|github-actions) echo "Bot PR; not assigning."; exit 0 ;;
+          esac
+          # A fork author isn't a collaborator, so GitHub can refuse the assignment; fall back to a
+          # mention so the PR still has an obvious owner.
+          if gh pr edit "$PR" --add-assignee "$AUTHOR"; then
+            echo "Assigned @$AUTHOR."
+          else
+            echo "::warning::Couldn't assign @$AUTHOR (not a collaborator?); mentioning them instead."
+            gh pr comment "$PR" --body "Author: @$AUTHOR — this PR is yours. GitHub couldn't add you as an assignee; comment here if you need a hand."
+          fi
