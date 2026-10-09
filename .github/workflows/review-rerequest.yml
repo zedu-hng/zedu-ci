@@ -21,6 +21,7 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
   REPO: ${{ github.repository }}
   CI_REPO: zedu-hng/zedu-ci
   CHANGES_LABEL: changes-requested
@@ -88,11 +89,19 @@ jobs:
             echo "No changes-requested lead to re-request on PR #$PR."
             exit 0
           fi
+          ok=()
           for handle in "${handles[@]}"; do
-            gh pr edit "$PR" --add-reviewer "$handle" \
-              || gh pr comment "$PR" --body "Couldn't re-request review from @$handle (not a collaborator yet?)."
+            if gh pr edit "$PR" --add-reviewer "$handle"; then
+              ok+=("$handle")
+            else
+              gh pr comment "$PR" --body "Couldn't re-request review from @$handle (not a collaborator yet?)."
+            fi
           done
-          mentions=$(printf '@%s ' "${handles[@]}")
-          # shellcheck disable=SC2086 # one @mention per handle
-          gh pr comment "$PR" --body "New commits pushed after changes were requested; re-requested review from $mentions"
-          echo "PR #$PR: re-requested $(printf '%s ' "${handles[@]}")."
+          if [ "${#ok[@]}" -gt 0 ]; then
+            mentions=$(printf '@%s ' "${ok[@]}")
+            # shellcheck disable=SC2086 # one @mention per handle
+            gh pr comment "$PR" --body "New commits pushed after changes were requested; re-requested review from $mentions"
+            echo "PR #$PR: re-requested $(printf '%s ' "${ok[@]}")."
+          else
+            echo "PR #$PR: no review request succeeded; see the comment(s) above."
+          fi
