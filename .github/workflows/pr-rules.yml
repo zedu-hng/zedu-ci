@@ -5,7 +5,8 @@ name: PR rules
 # from the GitHub API, so a PR can't edit these rules to pass itself.
 #
 # - Branch name: <type>/<ticket-id>-<short-description>. Reviewers (write access) are exempt.
-# - Single author: one person per PR. Co-authored-by trailers are fine. Reviewers are exempt.
+# - Single author: one person per PR. Co-authored-by trailers are fine, and bot commits (a merge
+#   commit from the update-branch sweep) don't count. Reviewers are exempt.
 # - Protected files: the caller's `protected` paths, plus secret-like files in every repo (.env*
 #   except .env.example, keystores, certificates and keys, provisioning profiles, credential JSON).
 #   Blocked unless a reviewer adds the `config-change-approved` label. A rename counts its old path.
@@ -180,12 +181,15 @@ jobs:
 
           if wants author; then
             if [ "$sync" = true ]; then waived "Single author"
-            elif ! authors=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits" \
-                   --jq '.[] | (.author.login // .commit.author.email)' | sort -u); then
+            elif ! raw=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits" \
+                   --jq '.[] | (.author.login // .commit.author.email)'); then
               echo "::error::Couldn't read the PR's commits (API error). Re-run this job."
               report "Single author" failure "Couldn't read commits (API error); re-run PR rules"
             else
               # GitHub login when the commit email is linked to an account, otherwise the author email.
+              # Bot commits don't count: a merge commit from the update-branch sweep is authored by
+              # github-actions[bot], and it isn't a second person.
+              authors=$(printf '%s\n' "$raw" | grep -viE '\[bot\]$|github-actions' | sort -u)
               count=$(grep -c . <<< "$authors" || true)
               echo "Commit authors: $(tr '\n' ' ' <<< "$authors")"
               if [ "$count" -le 1 ]; then report "Single author" success "OK: single author"
