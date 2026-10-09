@@ -1,0 +1,120 @@
+name: Update branch
+
+# Reusable. Keeps contributor PR branches current with their base, so review and the fork build are
+# not done against stale code. Hourly, for each PR whose base has moved behind, it asks GitHub to
+# merge the base into the head (gh pr update-branch). A merge commit created this way is authored by
+# github-actions[bot] and PR rules' Single author check ignores it.
+#
+# For a fork PR the base token usually can't push to the fork (the fork must allow maintainer edits),
+# so when the update fails this nudges the author and the team lead(s) to update it themselves. A
+# marker comment bounds attempts to once per ATTEMPT_HOURS per PR, so a PR is not updated (or nudged)
+# every hour.
+#
+# Trusted: schedule from the default branch, never checks out PR code.
+#
+# Caller: schedule (e.g. hourly) and workflow_dispatch. The caller adds IS_BOOTCAMP.
+# Caller permissions: contents: write, pull-requests: write, issues: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  CI_REPO: zedu-hng/zedu-ci
+  ATTEMPT_HOURS: "6"
+  MARKER: "<!-- zedu-update-branch -->"
+
+jobs:
+  update:
+    name: Update behind PR branches
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Load registered teams
+        run: |
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/teams.sh
+          team_orgs > teams.txt
+
+      - name: Update
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2016 # jq programs use $name variables inside single quotes
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/open-prs.sh
+          open_prs > prs.json || { echo "::error::Couldn't list open PRs (API error)."; exit 1; }
+
+          # One row per behind PR: number, fork owner, author, base.
+          jq -r --arg repo "$REPO" '
+            map(select((.baseRefName == "dev" or .baseRefName == "central-staging")
+                and .headRepository.nameWithOwner != $repo))
+            | .[]
+            | select(.isDraft == false)
+            | select(.mergeStateStatus == "BEHIND")
+            | ([.labels.nodes[].name] | join(",")) as $labels
+            | select(($labels | split(",") | index("sync")) == null and ($labels | split(",") | index("hotfix")) == null)
+            | [.number, (.headRepositoryOwner.login // ""), (.author.login // ""), .baseRefName]
+            | join("|")' prs.json > behind.txt
+          echo "$(grep -c . behind.txt || true) behind PR(s)"
+
+          now=$(date +%s)
+          declare -A leads_cache
+          while IFS='|' read -r num owner author base; do
+            [ -n "$num" ] || continue
+            # Throttle per PR: the marker comment's updated_at bounds attempts.
+            # shellcheck disable=SC2016 # $m is a jq variable
+            existing=$(gh api --paginate "repos/$REPO/issues/$num/comments?per_page=100" \
+              | jq -r --arg m "$MARKER" '.[] | select(.body | contains($m)) | "\(.id) \(.updated_at)"' \
+              | tail -1)
+            id=""
+            if [ -n "$existing" ]; then
+              id=${existing%% *}; updated=${existing#* }
+              age=$(( now - $(date -d "$updated" +%s) ))
+              if [ "$age" -lt $(( ATTEMPT_HOURS * 3600 )) ]; then
+                echo "PR #$num: attempted ${age}s ago; skipping"
+                continue
+              fi
+            fi
+
+            if gh pr update-branch "$num" --repo "$REPO" >/dev/null 2>&1; then
+              body="Updated this branch with the latest \`$base\`."
+              echo "PR #$num: updated"
+            else
+              # Fall back to asking the author and the team lead(s) to update it.
+              if [ -z "${leads_cache[$owner]:-}" ]; then
+                if [ -n "$owner" ] && grep -qixF "$owner" teams.txt; then
+                  leads_cache[$owner]=$(team_of "$owner" | sed -n 's/^leads=//p' | tr ',' ' ' || true)
+                else
+                  leads_cache[$owner]=" "
+                fi
+              fi
+              mentions="@$author"
+              # shellcheck disable=SC2086 # one @mention per lead
+              for handle in ${leads_cache[$owner]}; do [ "$handle" = "$author" ] || mentions="$mentions @$handle"; done
+              body="Couldn't update this branch automatically; the base has moved. $mentions — please merge \`$base\` into your branch (the PR's \"Update branch\" button)."
+              echo "PR #$num: update failed; nudged the author and leads"
+            fi
+            body="$body
+            $MARKER"
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
+            else
+              gh api -X POST "repos/$REPO/issues/$num/comments" -f body="$body" >/dev/null
+            fi
+          done < behind.txt

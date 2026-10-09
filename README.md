@@ -25,12 +25,18 @@ callers never ship upstream.
 
 | File | What it does | Caller trigger |
 |---|---|---|
-| `pr-rules.yml` | Branch name, Single author, Protected files, Size, PR title, PR template, each as a commit status | `pull_request_target` |
+| `pr-rules.yml` | Branch name, Single author, Protected files, Size, PR title (type and ticket matching the branch, bot commits ignored), PR template, each as a commit status | `pull_request_target` |
 | `team-routing.yml` | Requests review from the fork's team leads | `pull_request_target` |
 | `lead-approval.yml` | `Lead approved` status, plus a sweep for PRs not green yet | `pull_request_target`, `workflow_dispatch`, `schedule` |
 | `lead-approval-relay.yml` | Re-checks Lead approved right after a review | `workflow_run` on `Lead approval review` |
+| `review-feedback.yml` | Sets/clears the `changes-requested` label and mentions the author and leads when a review requests changes | `workflow_run` on `Lead approval review` |
+| `review-rerequest.yml` | Re-requests the lead after a push on a changes-requested PR | `pull_request_target` (synchronize) |
 | `reviewer-notify.yml` | Ready-for-review queue, 3 unclaimed PRs per team | `pull_request_target`, `workflow_run`, `schedule`, `workflow_dispatch` |
-| `reviewer-claim.yml` | `/claim`, `/release`, 24h escalation and release | `issue_comment`, `schedule`, `workflow_dispatch` |
+| `reviewer-claim.yml` | `/claim`, `/release` (the `claimed` label), 24h escalation and release | `issue_comment`, `schedule`, `workflow_dispatch` |
+| `pr-assign.yml` | Assigns a contributor PR to its author | `pull_request_target` |
+| `fork-gate.yml` | Closes a PR opened from a personal-account fork | `pull_request_target` (opened, reopened) |
+| `pr-nudges.yml` | Nudges unresolved review threads and merge conflicts (4h per PR) | `schedule` (2h), `workflow_dispatch` |
+| `update-branch.yml` | Updates behind PR branches; nudges the author and leads if it can't | `schedule` (hourly), `workflow_dispatch` |
 | `pr-review-comment.yml` | Posts PR checks / PR scans results as statuses, plus the review bot comment | `workflow_run` on `PR checks`, `PR scans` |
 | `pr-review-recheck.yml` | Re-runs checks that failed only on PR review after a rule fix lands | `push` to dev and central-staging |
 
@@ -82,7 +88,7 @@ the workflow and need no second SHA in the callers:
 | `lib/teams.sh` (`team_of`, `team_orgs`; teams.yml read live from `main`) | team routing, lead approval, reviewer notify |
 | `lib/backend-url.sh` (`backend_from_body`) | build gate (fork side), fork build relay |
 | `lib/docs-only.sh` (`docs_only`: a Markdown-only PR needs no build) | build gate (fork side), fork build relay |
-| `lib/open-prs.sh` (`open_prs`: one GraphQL read of every open PR) | lead approval and fork build sweeps, reviewer notify, recheck |
+| `lib/open-prs.sh` (`open_prs`, `open_prs_with_review_state`: one GraphQL read of every open PR) | lead approval and fork build sweeps, reviewer notify, recheck, pr nudges, update branch |
 | `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
 
 In the checks workflows the checkout comes last, so the scanners never see zedu-ci's files. Whole

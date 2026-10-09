@@ -1,0 +1,56 @@
+name: Fork gate
+
+# Reusable. Closes a PR opened from a personal account's fork, because Zedu reviews PRs only from a
+# team's org fork (see CONTRIBUTING.md). A PR from a registered or not-yet-registered org fork is left
+# alone: an unregistered team is routed and flagged, not closed. A reviewer's own setup PR from a
+# personal fork is exempt (they have write access).
+#
+# Trusted: runs on pull_request_target from the default branch with the base repo's token; never checks
+# out PR code.
+#
+# Caller: pull_request_target (opened, reopened). The caller adds IS_BOOTCAMP.
+# Caller permissions: contents: read, pull-requests: write, issues: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  REPO: ${{ github.repository }}
+  PR: ${{ github.event.pull_request.number }}
+  AUTHOR: ${{ github.event.pull_request.user.login }}
+  HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+  HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
+  HEAD_OWNER_TYPE: ${{ github.event.pull_request.head.repo.owner.type }}
+
+jobs:
+  gate:
+    name: Close personal-fork PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Close if the fork is a personal account
+        run: |
+          if [ "$HEAD_REPO" = "$REPO" ]; then echo "Same-repo PR; nothing to gate."; exit 0; fi
+          case "$AUTHOR" in
+            *\[bot\]|github-actions) echo "Bot PR; nothing to gate."; exit 0 ;;
+          esac
+          # Org forks (registered teams, and teams still to be registered) are kept; only a personal
+          # account's fork is closed.
+          if [ "$HEAD_OWNER_TYPE" != "User" ]; then
+            echo "Fork owner $HEAD_OWNER is an organization; leaving the PR open."
+            exit 0
+          fi
+          # Reviewers (write access) open setup PRs from personal forks.
+          perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission || echo unknown)
+          case "$perm" in
+            admin|maintain|write) echo "Author $AUTHOR is a reviewer; leaving the PR open."; exit 0 ;;
+          esac
+          gh pr close "$PR" --comment "This PR is opened from a personal fork (\`$HEAD_OWNER\`), not a team fork. Zedu only reviews PRs opened from your team's org fork into \`$REPO:dev\`; this one is closed automatically. Push your changes to a team fork and open a new PR from its ticket branch — see CONTRIBUTING.md. If your team's fork is missing, ask a maintainer."
+          echo "Closed PR #$PR from personal fork $HEAD_OWNER."

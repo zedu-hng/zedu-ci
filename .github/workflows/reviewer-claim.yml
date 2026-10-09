@@ -4,6 +4,10 @@ name: Reviewer claim
 # give it back. Only repo collaborators (the reviewers) can claim. A 15-minute sweep re-mentions a
 # PR left unclaimed for 24h (once), and releases a claim that has had no review for 24h.
 #
+# A claim is the `claimed` label, not an assignee: every PR is assigned to its author (see pr-assign).
+# The claimer is recorded in a hidden marker on the bot's claim comment, so /release can tell who
+# holds the PR.
+#
 # Trusted: runs on pull_request_target/issue_comment and never checks out PR code.
 
 # Caller: issue_comment (created), schedule and workflow_dispatch. The concurrency group lives in the
@@ -23,6 +27,7 @@ env:
   GH_REPO: ${{ github.repository }}
   REPO: ${{ github.repository }}
   REVIEW_LABEL: ready-for-review
+  CLAIMED_LABEL: claimed
   ESCALATED_LABEL: escalated-review
   REVIEWERS_TEAM: zedu-hng/reviewers
   STALE_HOURS: "24"
@@ -85,32 +90,48 @@ jobs:
           WHO: ${{ steps.cmd.outputs.who }}
           ACTION: ${{ steps.cmd.outputs.action }}
         run: |
-          assignees=$(gh api "repos/$REPO/pulls/$PR" --jq '[.assignees[].login] | join(",")')
+          # The claimer is recorded in a hidden marker on the bot's claim comment: a label can't hold
+          # a login, and the assignee list now holds the PR's author.
+          claimer() { # <pr>
+            # Only the workflow bot's comments are trusted, so a user can't fake a claim marker.
+            gh api --paginate "repos/$REPO/issues/$1/comments?per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]")
+                    | select(.body | contains("<!-- zedu-claim:"))
+                    | .body | capture("<!-- zedu-claim:(?<who>[A-Za-z0-9-]+) -->").who' \
+              | tail -1
+          }
+          has() { case ",$1," in *,"$2",*) return 0 ;; esac; return 1; }
+          labels=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name] | join(",")')
           if [ "$ACTION" = "claim" ]; then
-            labels=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name] | join(",")')
-            case ",$labels," in
-              *,"$REVIEW_LABEL",*) ;;
-              *)
-                gh pr comment "$PR" --body "This PR isn't in the ready-for-review queue yet; a team lead approves and the queue marks it ready first."
-                exit 0 ;;
-            esac
-            if [ -z "$assignees" ]; then
-              gh pr edit "$PR" --add-assignee "$WHO"
-              gh pr edit "$PR" --remove-label "$ESCALATED_LABEL" 2>/dev/null || true
-              gh pr comment "$PR" --body "Claimed by @$WHO. Comment \`/release\` to give it back."
-            elif [ "$assignees" = "$WHO" ]; then
-              gh pr comment "$PR" --body "@$WHO already claimed this PR."
+            if ! has "$labels" "$REVIEW_LABEL"; then
+              gh pr comment "$PR" --body "This PR isn't in the ready-for-review queue yet; a team lead approves and the queue marks it ready first."
+              exit 0
+            fi
+            if has "$labels" "$CLAIMED_LABEL"; then
+              current=$(claimer "$PR")
+              if [ "$current" = "$WHO" ]; then gh pr comment "$PR" --body "@$WHO already claimed this PR."
+              else gh pr comment "$PR" --body "Already claimed by @${current:-another reviewer}."; fi
             else
-              gh pr comment "$PR" --body "Already claimed by @$(printf '%s' "$assignees" | sed 's/,/, @/g')."
+              gh pr edit "$PR" --add-label "$CLAIMED_LABEL"
+              gh pr edit "$PR" --remove-label "$ESCALATED_LABEL" 2>/dev/null || true
+              if ! gh pr comment "$PR" --body "Claimed by @$WHO. Comment \`/release\` to give it back.
+              <!-- zedu-claim:$WHO -->"; then
+                # A claimed label with no marker would look claimed but have no claimer; roll back.
+                gh pr edit "$PR" --remove-label "$CLAIMED_LABEL"
+                echo "::error::Couldn't record the claim comment; removed the $CLAIMED_LABEL label."
+                exit 1
+              fi
+            fi
+          elif has "$labels" "$CLAIMED_LABEL"; then
+            current=$(claimer "$PR")
+            if [ "$current" = "$WHO" ]; then
+              gh pr edit "$PR" --remove-label "$CLAIMED_LABEL"
+              gh pr comment "$PR" --body "Released by @$WHO; back in the queue for anyone to claim."
+            else
+              gh pr comment "$PR" --body "@$WHO didn't claim this PR (claimed by @${current:-another reviewer})."
             fi
           else
-            case ",$assignees," in
-              *,"$WHO",*)
-                gh pr edit "$PR" --remove-assignee "$WHO"
-                gh pr comment "$PR" --body "Released by @$WHO; back in the queue for anyone to claim." ;;
-              *)
-                gh pr comment "$PR" --body "@$WHO isn't assigned to this PR." ;;
-            esac
+            gh pr comment "$PR" --body "This PR isn't claimed."
           fi
 
   sweep:
@@ -122,12 +143,21 @@ jobs:
       - name: Sweep the ready-for-review queue
         run: |
           now=$(date +%s)
-          # The issues list already carries assignees and labels, so no per-PR fetch for them.
+          has() { case ",$1," in *,"$2",*) return 0 ;; esac; return 1; }
+          claimer() { # <pr>
+            # Only the workflow bot's comments are trusted, so a user can't fake a claim marker.
+            gh api --paginate "repos/$REPO/issues/$1/comments?per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]")
+                    | select(.body | contains("<!-- zedu-claim:"))
+                    | .body | capture("<!-- zedu-claim:(?<who>[A-Za-z0-9-]+) -->").who' \
+              | tail -1
+          }
+          # The issues list already carries labels, so no per-PR fetch for them.
           gh api --paginate "repos/$REPO/issues?state=open&labels=$REVIEW_LABEL&per_page=100" \
-            --jq '.[] | select(.pull_request) | "\(.number)|\([.assignees[].login] | join(","))|\([.labels[].name] | join(","))"' |
-          while IFS='|' read -r pr assignees labels; do
+            --jq '.[] | select(.pull_request) | "\(.number)|\([.labels[].name] | join(","))"' |
+          while IFS='|' read -r pr labels; do
             [ -n "$pr" ] || continue
-            if [ -z "$assignees" ]; then
+            if ! has "$labels" "$CLAIMED_LABEL"; then
               case ",$labels," in *,"$ESCALATED_LABEL",*) echo "PR #$pr: already escalated"; continue ;; esac
               labeled_at=$(gh api --paginate "repos/$REPO/issues/$pr/timeline?per_page=100" |
                 jq -s "[flatten[] | select(.event==\"labeled\" and .label.name==\"$REVIEW_LABEL\")] | last | .created_at // empty")
@@ -139,18 +169,18 @@ jobs:
                 echo "PR #$pr: escalated"
               fi
             else
-              who=$(printf '%s' "$assignees" | cut -d, -f1)
+              who=$(claimer "$pr")
               claimed_at=$(gh api --paginate "repos/$REPO/issues/$pr/timeline?per_page=100" |
-                jq -s '[flatten[] | select(.event=="assigned")] | last | .created_at // empty')
+                jq -s "[flatten[] | select(.event==\"labeled\" and .label.name==\"$CLAIMED_LABEL\")] | last | .created_at // empty")
               [ -n "$claimed_at" ] || continue
               claim_age=$(( now - $(date -d "$claimed_at" +%s) ))
               if [ "$claim_age" -ge $(( STALE_HOURS * 3600 )) ]; then
                 reviewed=$(gh api --paginate "repos/$REPO/pulls/$pr/reviews?per_page=100" |
                   jq -s "[flatten[] | select(.user.login==\"$who\")] | length")
                 if [ "$reviewed" = "0" ]; then
-                  gh pr edit "$pr" --remove-assignee "$who"
-                  gh pr comment "$pr" --body "Auto-released after ${STALE_HOURS}h with no review; back in the queue. @$who comment \`/claim\` if you're still on it."
-                  echo "PR #$pr: released stale claim by @$who"
+                  gh pr edit "$pr" --remove-label "$CLAIMED_LABEL"
+                  gh pr comment "$pr" --body "Auto-released after ${STALE_HOURS}h with no review; back in the queue. @${who:-The reviewer} comment \`/claim\` if you're still on it."
+                  echo "PR #$pr: released stale claim by @${who:-unknown}"
                 fi
               fi
             fi
