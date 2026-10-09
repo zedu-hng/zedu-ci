@@ -1,0 +1,97 @@
+name: Review feedback
+
+# Reusable. Turns a review into the `changes-requested` label and one comment that mentions the
+# author and the fork's team lead(s), so a review that asks for changes is visible and owned. The
+# latest decisive review decides the label: when it is no longer CHANGES_REQUESTED (a later approval
+# or dismissal), the label is removed.
+#
+# Trusted: a review on a fork PR runs with a read-only token, so this reacts to the trigger-only
+# "Lead approval review" run via workflow_run, from the default branch, without checking out PR code.
+#
+# Caller: workflow_run on "Lead approval review" (completed). The caller repo's lead-approval-review.yml
+# puts "#<pr>" in its run name; fork runs list no PR, so that number (or the head commit) resolves it.
+# Caller permissions: contents: read, pull-requests: write, issues: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  CI_REPO: zedu-hng/zedu-ci
+  CHANGES_LABEL: changes-requested
+  HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+  RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+  RUN_PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+
+jobs:
+  feedback:
+    name: Label changes requested
+    if: github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Apply the changes-requested label
+        run: |
+          set -o pipefail
+          # Resolve the reviewed PR: same-repo runs list it; fork runs don't, so read the number from
+          # the run name, then fall back to matching open PRs by head commit.
+          pr=""
+          if jq -e '.[0]' >/dev/null <<< "$RUN_PRS"; then pr=$(jq -r '.[0].number' <<< "$RUN_PRS"); fi
+          if [ -z "$pr" ] && [[ "$RUN_TITLE" =~ \#([0-9]+) ]]; then pr="${BASH_REMATCH[1]}"; fi
+          if [ -z "$pr" ]; then
+            pr=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+              | jq -rs --arg s "$HEAD_SHA" 'flatten | map(select(.head.sha == $s or .merge_commit_sha == $s)) | .[0].number // empty')
+          fi
+          if [ -z "$pr" ]; then echo "No open PR for this review run; nothing to label."; exit 0; fi
+
+          fields=$(gh api "repos/$REPO/pulls/$pr" --jq \
+            '"\(.user.login // "")\t\(.head.repo.owner.login // "")\t\([.labels[].name] | join(","))"') \
+            || { echo "::error::Couldn't read PR #$pr (API error)."; exit 1; }
+          IFS=$'\t' read -r author owner labels <<< "$fields"
+          has_label=false; case ",$labels," in *,"$CHANGES_LABEL",*) has_label=true ;; esac
+
+          # Latest decisive (non-comment, non-pending) review across every reviewer.
+          # gh can't combine --slurp with --jq, so the pages are piped into jq.
+          if ! reviews=$(gh api --paginate "repos/$REPO/pulls/$pr/reviews?per_page=100"); then
+            echo "::error::Couldn't read PR #$pr's reviews (API error); leaving the label unchanged."
+            exit 1
+          fi
+          state=$(printf '%s' "$reviews" \
+            | jq -rs 'flatten | map(select(.state != "COMMENTED" and .state != "PENDING")) | sort_by(.submitted_at) | last | .state // ""')
+          if [ "$state" != "CHANGES_REQUESTED" ]; then
+            if [ "$has_label" = true ]; then
+              gh pr edit "$pr" --remove-label "$CHANGES_LABEL"
+              echo "PR #$pr: latest review is ${state:-none}; removed $CHANGES_LABEL."
+            else
+              echo "PR #$pr: latest review is ${state:-none}; nothing to do."
+            fi
+            exit 0
+          fi
+          if [ "$has_label" = true ]; then echo "PR #$pr: already labeled $CHANGES_LABEL."; exit 0; fi
+
+          gh pr edit "$pr" --add-label "$CHANGES_LABEL"
+          mentions="@$author"
+          if [ -n "$owner" ]; then
+            # shellcheck source=/dev/null
+            source .zedu-ci/scripts/lib/teams.sh
+            leads=$(team_of "$owner" | sed -n 's/^leads=//p' | tr ',' '\n' | grep -v '^$' || true)
+            while read -r handle; do [ -n "$handle" ] && mentions="$mentions @$handle"; done <<< "$leads"
+          fi
+          gh pr comment "$pr" --body "Changes requested. $mentions — please address the review and push; a push re-requests the leads' review automatically. The PR keeps the \`$CHANGES_LABEL\` label until it is approved."
+          echo "PR #$pr: labeled $CHANGES_LABEL."

@@ -1,0 +1,98 @@
+name: Review re-request
+
+# Reusable. When an author pushes onto a PR whose changes were requested, re-request review from the
+# team lead(s), so the PR returns to their queue instead of sitting with a dismissed request. A lead
+# is re-requested when the `changes-requested` label is set, or when their own latest review is
+# CHANGES_REQUESTED. A push onto an approved PR does nothing here.
+#
+# Trusted: runs on pull_request_target from the default branch with the base repo's token, so it works
+# for fork PRs, and never checks out PR code.
+#
+# Caller: pull_request_target (synchronize). The caller adds IS_BOOTCAMP.
+# Caller permissions: contents: read, pull-requests: write, issues: write.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  CI_REPO: zedu-hng/zedu-ci
+  CHANGES_LABEL: changes-requested
+  PR: ${{ github.event.pull_request.number }}
+  AUTHOR: ${{ github.event.pull_request.user.login }}
+  HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
+  HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+
+jobs:
+  rerequest:
+    name: Re-request the lead after a push
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Re-request lead review
+        run: |
+          set -o pipefail
+          if [ "$HEAD_REPO" = "$REPO" ]; then echo "Same-repo PR; no lead to re-request."; exit 0; fi
+          case "$AUTHOR" in
+            *\[bot\]|github-actions) echo "Bot PR; nothing to re-request."; exit 0 ;;
+          esac
+          perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission || echo unknown)
+          case "$perm" in
+            admin|maintain|write) echo "Author $AUTHOR is a reviewer; no lead review needed."; exit 0 ;;
+          esac
+
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/teams.sh
+          info=$(team_of "$HEAD_OWNER") || { echo "::error::Couldn't read teams.yml (API error)."; exit 1; }
+          found=$(printf '%s\n' "$info" | sed -n 's/^found=//p')
+          [ "$found" = "true" ] || { echo "Fork $HEAD_OWNER isn't a registered team; nothing to re-request."; exit 0; }
+          leads=$(printf '%s\n' "$info" | sed -n 's/^leads=//p' | tr ',' '\n' | grep -v '^$' || true)
+
+          labels=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name] | join(",")') \
+            || { echo "::error::Couldn't read PR #$PR (API error)."; exit 1; }
+          has_label=false; case ",$labels," in *,"$CHANGES_LABEL",*) has_label=true ;; esac
+          # gh can't combine --slurp with --jq, so the pages are piped into jq.
+          if ! reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100"); then
+            echo "::error::Couldn't read PR #$PR's reviews (API error)."
+            exit 1
+          fi
+
+          handles=()
+          while read -r handle; do
+            [ -n "$handle" ] || continue
+            [ "$handle" = "$AUTHOR" ] && continue
+            if [ "$has_label" = true ]; then handles+=("$handle"); continue; fi
+            state=$(printf '%s' "$reviews" | jq -rs --arg u "$handle" \
+              'flatten | map(select((.user.login | ascii_downcase) == ($u | ascii_downcase))) | sort_by(.submitted_at) | last | .state // ""')
+            [ "$state" = "CHANGES_REQUESTED" ] && handles+=("$handle")
+          done <<< "$leads"
+
+          if [ "${#handles[@]}" -eq 0 ]; then
+            echo "No changes-requested lead to re-request on PR #$PR."
+            exit 0
+          fi
+          for handle in "${handles[@]}"; do
+            gh pr edit "$PR" --add-reviewer "$handle" \
+              || gh pr comment "$PR" --body "Couldn't re-request review from @$handle (not a collaborator yet?)."
+          done
+          mentions=$(printf '@%s ' "${handles[@]}")
+          # shellcheck disable=SC2086 # one @mention per handle
+          gh pr comment "$PR" --body "New commits pushed after changes were requested; re-requested review from $mentions"
+          echo "PR #$PR: re-requested $(printf '%s ' "${handles[@]}")."
