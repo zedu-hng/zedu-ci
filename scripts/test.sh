@@ -181,5 +181,11 @@ h=$(cd "$OBF" && printf 'known\n' > k.dat && git hash-object k.dat); printf '%s 
 (cd "$OBF" && bash "$OLDPWD/scripts/obfuscation-scan.sh" nosuchref HEAD > out.txt 2>&1); check "obfuscation: bad base is an error" "2" "$?"
 rm -rf "$OBF"
 
+# reviewer-notify: the build status the queue waits for is an input, and the default keeps mobile and
+# desktop (no input passed) on "Fork build".
+RN=.github/workflows/reviewer-notify.yml
+check "reviewer-notify: build context comes from the input" "1" "$(grep -c -E '^  BUILD_CONTEXT: \$\{\{ inputs\.build_context \}\}$' "$RN")"
+check "reviewer-notify: input defaults to Fork build" "Fork build" "$(awk '/build_context:/{f=1} f&&/default:/{sub(/^ *default: */,""); print; exit}' "$RN")"
+
 rm -f "$WRITES" "$READS"
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
