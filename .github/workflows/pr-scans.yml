@@ -63,6 +63,8 @@ jobs:
       - name: Obfuscation scan
         id: obfuscation
         continue-on-error: true
+        # shell: bash sets pipefail. The default shell does not, and tee would hide the exit code.
+        shell: bash
         run: |
           rc=0
           bash .zedu-ci/scripts/obfuscation-scan.sh HEAD^1 HEAD | tee -a "$GITHUB_STEP_SUMMARY" || rc=${PIPESTATUS[0]}

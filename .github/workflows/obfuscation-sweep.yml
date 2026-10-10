@@ -49,6 +49,8 @@ jobs:
       - name: Scan the whole tree
         env:
           SWEEP: "1"
+        # shell: bash sets pipefail. The default shell does not, and tee would hide the exit code.
+        shell: bash
         run: |
           empty=$(git hash-object -t tree -w /dev/null)
           rc=0
