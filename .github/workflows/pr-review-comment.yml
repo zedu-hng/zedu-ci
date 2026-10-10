@@ -74,22 +74,29 @@ jobs:
           allowed='["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Jest","PR review","Build","Semgrep","ClamAV","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"]'
           # shellcheck source=/dev/null
           source .zedu-ci/scripts/lib/status.sh
-          # The loop reads from a process substitution, not a pipe, so it runs in this shell and can
-          # count failures. status_set retries each write; every other status still posts after one fails.
+          # Read the results first. A jq failure inside a process substitution is swallowed: the loop would
+          # post nothing and still report failed=0. status_set retries each write; the loop runs in this
+          # shell so it can count failures, and every other status still posts after one fails.
+          if ! rows=$(jq -r --argjson ok "$allowed" '
+            .checks[]?
+            | select((.context | type) == "string" and (.context as $c | $ok | index($c)))
+            | [.context, (if .state == "success" then "success" else "failure" end),
+               ((.description // "") | tostring | gsub("[^A-Za-z0-9 .,:;()/_-]"; "") | .[0:120])]
+            | @tsv' "$FILE"); then
+            echo "::error::Couldn't read the check results; no statuses were posted."
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           failed=0
           while IFS=$'\t' read -r context state desc; do
+            [ -n "$context" ] || continue
             if status_set "$HEAD_SHA" "$context" "$state" "$desc" "$RUN_URL"; then
               echo "$context: $state ($status_outcome)"
             else
               echo "::error::Couldn't post the $context status after 3 attempts."
               failed=$((failed + 1))
             fi
-          done < <(jq -r --argjson ok "$allowed" '
-            .checks[]?
-            | select((.context | type) == "string" and (.context as $c | $ok | index($c)))
-            | [.context, (if .state == "success" then "success" else "failure" end),
-               ((.description // "") | tostring | gsub("[^A-Za-z0-9 .,:;()/_-]"; "") | .[0:120])]
-            | @tsv' "$FILE")
+          done <<< "$rows"
           echo "failed=$failed" >> "$GITHUB_OUTPUT"
 
       - name: Resolve PR number

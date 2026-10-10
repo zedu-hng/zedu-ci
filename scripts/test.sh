@@ -218,9 +218,26 @@ retry_case "recovers on the 3rd attempt" 2 0 3
 retry_case "gives up after 3 attempts" 99 1 3
 unset FAIL_FIRST; rm -f "$W2"
 PRC=.github/workflows/pr-review-comment.yml
-check "pr-review-comment: statuses step is not a pipeline subshell" "1" "$(grep -c -E '^          done < <\(jq ' "$PRC")"
 check "pr-review-comment: a failed status write fails the run" "1" "$(grep -c -E 'name: Fail if a status was not posted' "$PRC")"
 check "pr-review-comment: no write failure is only a warning" "0" "$(grep -c -E "warning::Couldn't post" "$PRC")"
+# Run the real "Post check statuses" step with a stub status_set and a results file.
+step_run() { # results-json [context whose write fails]
+  local d; d=$(mktemp -d)
+  ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts y["jobs"]["comment"]["steps"].find { |s| s["id"] == "statuses" }["run"]' "$PRC" > "$d/step.sh"
+  mkdir -p "$d/.zedu-ci/scripts/lib"
+  # shellcheck disable=SC2016 # the stub is written out literally
+  printf '%s\n' 'status_set() { echo "$2" >> "$POSTED"; [ "$2" != "$FAIL_CONTEXT" ]; }' > "$d/.zedu-ci/scripts/lib/status.sh"
+  printf '%s' "$1" > "$d/results.json"; : > "$d/posted"; : > "$d/out"
+  (cd "$d" && POSTED="$d/posted" GITHUB_OUTPUT="$d/out" FILE="$d/results.json" HEAD_SHA=x RUN_URL=u \
+    FAIL_CONTEXT="${2:-}" bash -e step.sh > /dev/null 2>&1); local rc=$?
+  echo "rc=$rc $(tr '\n' ' ' < "$d/out")posted=$(grep -c . "$d/posted")"; rm -rf "$d"
+}
+three='{"checks":[{"context":"ESLint","state":"success"},{"context":"Build","state":"success"},{"context":"Prettier","state":"failure"}]}'
+check "statuses step: all three post" "rc=0 failed=0 posted=3" "$(step_run "$three")"
+check "statuses step: one write fails, the others still post" "rc=0 failed=1 posted=3" "$(step_run "$three" Build)"
+check "statuses step: unreadable results fail loudly" "rc=0 failed=1 posted=0" "$(step_run '{not json')"
+check "statuses step: empty results post nothing" "rc=0 posted=0" "$(step_run '')"
+check "statuses step: unknown contexts are dropped" "rc=0 failed=0 posted=1" "$(step_run '{"checks":[{"context":"Evil","state":"success"},{"context":"Build","state":"success"}]}')"
 
 rm -f "$WRITES" "$READS"
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
