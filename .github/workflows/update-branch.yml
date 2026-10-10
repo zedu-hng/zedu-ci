@@ -75,14 +75,21 @@ jobs:
 
           now=$(date +%s)
           declare -A leads_cache
+          # Branch names can hold '#' (which would start a URL fragment) or '%'; encode just those,
+          # leaving '/' alone since it is part of ordinary branch names and GitHub expects it literally.
+          # Org logins and the base refs here can't contain either.
+          enc() { local s=$1; s=${s//%/%25}; s=${s//#/%23}; printf '%s' "$s"; }
           while IFS='|' read -r num owner author base headref; do
             [ -n "$num" ] || continue
             # Is the branch behind its base? mergeStateStatus says BLOCKED for a PR that is behind and
             # also awaits review, so compare the two refs directly; behind_by counts the commits.
-            if ! behind=$(gh api "repos/$REPO/compare/$base...$owner:$headref" --jq '.behind_by // 0' 2>/dev/null); then
-              echo "PR #$num: couldn't compare $owner:$headref; skipping"
+            if ! behind=$(gh api "repos/$REPO/compare/$(enc "$base")...$owner:$(enc "$headref")" \
+                 --jq '.behind_by // 0' 2>"$RUNNER_TEMP/compare.err"); then
+              echo "PR #$num: couldn't compare $owner:$headref: $(tr -d '\r' < "$RUNNER_TEMP/compare.err" 2>/dev/null)"
+              rm -f "$RUNNER_TEMP/compare.err"
               continue
             fi
+            rm -f "$RUNNER_TEMP/compare.err"
             if [ "${behind:-0}" -le 0 ]; then
               echo "PR #$num: up to date with $base"
               continue
