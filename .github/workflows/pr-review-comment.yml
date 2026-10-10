@@ -64,6 +64,7 @@ jobs:
           persist-credentials: false
 
       - name: Post check statuses
+        id: statuses
         if: steps.results.outcome == 'success'
         env:
           FILE: ${{ runner.temp }}/results/pr-checks-results.json
@@ -73,19 +74,23 @@ jobs:
           allowed='["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Jest","PR review","Build","Semgrep","ClamAV","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"]'
           # shellcheck source=/dev/null
           source .zedu-ci/scripts/lib/status.sh
-          jq -r --argjson ok "$allowed" '
-            .checks[]?
-            | select((.context | type) == "string" and (.context as $c | $ok | index($c)))
-            | [.context, (if .state == "success" then "success" else "failure" end),
-               ((.description // "") | tostring | gsub("[^A-Za-z0-9 .,:;()/_-]"; "") | .[0:120])]
-            | @tsv' "$FILE" |
+          # The loop reads from a process substitution, not a pipe, so it runs in this shell and can
+          # count failures. status_set retries each write; every other status still posts after one fails.
+          failed=0
           while IFS=$'\t' read -r context state desc; do
             if status_set "$HEAD_SHA" "$context" "$state" "$desc" "$RUN_URL"; then
               echo "$context: $state ($status_outcome)"
             else
-              echo "::warning::Couldn't post the $context status."
+              echo "::error::Couldn't post the $context status after 3 attempts."
+              failed=$((failed + 1))
             fi
-          done
+          done < <(jq -r --argjson ok "$allowed" '
+            .checks[]?
+            | select((.context | type) == "string" and (.context as $c | $ok | index($c)))
+            | [.context, (if .state == "success" then "success" else "failure" end),
+               ((.description // "") | tostring | gsub("[^A-Za-z0-9 .,:;()/_-]"; "") | .[0:120])]
+            | @tsv' "$FILE")
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
 
       - name: Resolve PR number
         id: pr
@@ -128,3 +133,14 @@ jobs:
           header: pr-review-bot
           number: ${{ steps.pr.outputs.number }}
           path: review-report.md
+
+      # Last, so a failed status write does not skip the comment. Re-run failed jobs posts the statuses
+      # again: the results artifact stays for 7 days. Without this a missing Build left the PR out of the
+      # queue until the next push, with only a warning in the log.
+      - name: Fail if a status was not posted
+        if: always() && steps.statuses.outputs.failed != '' && steps.statuses.outputs.failed != '0'
+        env:
+          FAILED: ${{ steps.statuses.outputs.failed }}
+        run: |
+          echo "::error::$FAILED check status(es) were not posted. Re-run the failed jobs to post them."
+          exit 1

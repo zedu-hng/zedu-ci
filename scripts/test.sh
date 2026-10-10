@@ -198,5 +198,29 @@ RN=.github/workflows/reviewer-notify.yml
 check "reviewer-notify: build context comes from the input" "1" "$(grep -c -E '^  BUILD_CONTEXT: \$\{\{ inputs\.build_context \}\}$' "$RN")"
 check "reviewer-notify: input defaults to Fork build" "Fork build" "$(awk '/build_context:/{f=1} f&&/default:/{sub(/^ *default: */,""); print; exit}' "$RN")"
 
+# status_set retries a failed write. A status that never lands (Build) leaves the PR out of the queue.
+W2=$(mktemp)
+gh() {
+  case "$*" in
+    *"/commits/"*"/status"*) printf '' ;;
+    *"/statuses/"*) echo w >> "$W2"; [ "$(grep -c . "$W2")" -gt "${FAIL_FIRST:-0}" ] ;;
+  esac
+}
+sleep() { :; }
+retry_case() { # name, failing writes, expected exit, expected writes
+  : > "$W2"; _status_sha=""; FAIL_FIRST=$2
+  status_set sha9 Build success Passed >/dev/null 2>&1; local rc=$?
+  check "status retry: $1, exit" "$3" "$rc"
+  check "status retry: $1, writes" "$4" "$(grep -c . "$W2")"
+}
+retry_case "first write lands" 0 0 1
+retry_case "recovers on the 3rd attempt" 2 0 3
+retry_case "gives up after 3 attempts" 99 1 3
+unset FAIL_FIRST; rm -f "$W2"
+PRC=.github/workflows/pr-review-comment.yml
+check "pr-review-comment: statuses step is not a pipeline subshell" "1" "$(grep -c -E '^          done < <\(jq ' "$PRC")"
+check "pr-review-comment: a failed status write fails the run" "1" "$(grep -c -E 'name: Fail if a status was not posted' "$PRC")"
+check "pr-review-comment: no write failure is only a warning" "0" "$(grep -c -E "warning::Couldn't post" "$PRC")"
+
 rm -f "$WRITES" "$READS"
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
