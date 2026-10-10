@@ -86,5 +86,17 @@ for mode in null fail; do
 done
 rm -f "$CALLS"
 
+# reviewer-claim sweep: a timestamp read from jq feeds `date -d`, so it must come out without JSON quotes.
+# jq -s alone printed "2026-10-10T14:39:09Z" with the quotes, `date -d` failed, and every scheduled
+# sweep died on the first ready PR.
+timeline='[{"event":"labeled","label":{"name":"ready-for-review"},"created_at":"2026-10-10T14:39:09Z"}]'
+check "claim sweep: jq -rs prints a bare timestamp" "2026-10-10T14:39:09Z" \
+  "$(printf '%s' "$timeline" | jq -rs '[flatten[] | select(.event=="labeled")] | last | .created_at // empty')"
+check "claim sweep: no timeline match is empty" "" \
+  "$(printf '[]' | jq -rs '[flatten[] | select(.event=="labeled")] | last | .created_at // empty')"
+check "claim sweep: every created_at read uses jq -r" "0" \
+  "$(grep -E 'jq .*created_at' .github/workflows/reviewer-claim.yml | grep -c -v -E 'jq -[a-z]*r')"
+check "claim sweep: created_at reads exist" "2" "$(grep -c -E 'jq .*created_at' .github/workflows/reviewer-claim.yml)"
+
 rm -f "$WRITES" "$READS"
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }

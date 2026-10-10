@@ -160,7 +160,7 @@ jobs:
             if ! has "$labels" "$CLAIMED_LABEL"; then
               case ",$labels," in *,"$ESCALATED_LABEL",*) echo "PR #$pr: already escalated"; continue ;; esac
               labeled_at=$(gh api --paginate "repos/$REPO/issues/$pr/timeline?per_page=100" |
-                jq -s "[flatten[] | select(.event==\"labeled\" and .label.name==\"$REVIEW_LABEL\")] | last | .created_at // empty")
+                jq -rs "[flatten[] | select(.event==\"labeled\" and .label.name==\"$REVIEW_LABEL\")] | last | .created_at // empty")
               [ -n "$labeled_at" ] || continue
               age=$(( now - $(date -d "$labeled_at" +%s) ))
               if [ "$age" -ge $(( STALE_HOURS * 3600 )) ]; then
@@ -171,7 +171,7 @@ jobs:
             else
               who=$(claimer "$pr")
               claimed_at=$(gh api --paginate "repos/$REPO/issues/$pr/timeline?per_page=100" |
-                jq -s "[flatten[] | select(.event==\"labeled\" and .label.name==\"$CLAIMED_LABEL\")] | last | .created_at // empty")
+                jq -rs "[flatten[] | select(.event==\"labeled\" and .label.name==\"$CLAIMED_LABEL\")] | last | .created_at // empty")
               [ -n "$claimed_at" ] || continue
               claim_age=$(( now - $(date -d "$claimed_at" +%s) ))
               if [ "$claim_age" -ge $(( STALE_HOURS * 3600 )) ]; then
