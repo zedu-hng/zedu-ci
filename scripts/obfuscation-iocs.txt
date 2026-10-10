@@ -1,0 +1,39 @@
+# Indicators for the Obfuscation scan: one POSIX ERE per line, matched against each line a PR adds
+# to a JS/TS file. '#' starts a comment. Keep entries near-zero false positive: a hit fails the PR.
+# Source: https://github.com/AviOfLagos/snare (iocs.txt), the EtherHiding loader family.
+#
+# C2 resolution through the Ethereum blockchain.
+0xa322E5f3D311D3080e6f0121063e9aDC2490Ef1a
+0xa322e5f3d311d3080e6f0121063e9adc2490ef1a
+1rpc\.io/eth
+eth\.drpc\.org
+ethereum-rpc\.publicnode\.com
+eth-mainnet\.public\.blastapi\.io
+# Loader globals and campaign paths.
+global\['_t_s'\]
+global\['_t_u'\]
+global\['_V'\]
+global\['_H2'\]
+_global\._t_s
+_global\._t_u
+_global\._H2
+/0x/clb
+/0x/cls
+/verify-human/
+# Inline node loader that sets obfuscated globals.
+node[[:space:]]+.*(-e|--eval)[[:space:]]+.*global\[
+# macOS clipboard stealer. iOS apps use UIPasteboard, so these do not belong in app JS.
+generalPasteboard
+NSPasteboard
+# Known npm worm artifacts.
+shai-hulud
+Shai-Hulud
+setup_bun\.js
+bun_environment\.js
+# PolinRider markers from the Zedu response guide. "@any" entries match every text file,
+# including .gitignore, where the loader hides its artifacts.
+@any rmcej%otb%
+@any Cot%3t=shtP
+@any temp_auto_push\.bat
+@any temp_interactive_push\.bat
+@any branch_structure\.json

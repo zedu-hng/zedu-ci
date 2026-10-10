@@ -1,0 +1,58 @@
+name: Obfuscation sweep
+
+# Reusable. Runs scripts/obfuscation-scan.sh over every file on a branch, not just a PR's added
+# lines, to find hidden or obfuscated code already committed (a PR scan only sees what a PR adds).
+# Fails the run on a finding, so the repo's Actions failure notifications fire.
+# Reads the tree as text. Never runs repo code.
+#
+# Caller: .github/workflows/obfuscation-sweep.yml named "Obfuscation sweep", on schedule (weekly)
+# and workflow_dispatch:
+#   jobs:
+#     sweep:
+#       permissions:
+#         contents: read
+#       uses: zedu-hng/zedu-ci/.github/workflows/obfuscation-sweep.yml@<40-char sha>
+# Caller permissions: contents: read.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch to sweep. Empty means the repo's default branch.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      # The empty tree as the base makes every tracked file an added file.
+      - name: Scan the whole tree
+        env:
+          SWEEP: "1"
+        # shell: bash sets pipefail. The default shell does not, and tee would hide the exit code.
+        shell: bash
+        run: |
+          empty=$(git hash-object -t tree -w /dev/null)
+          rc=0
+          bash .zedu-ci/scripts/obfuscation-scan.sh "$empty" HEAD | tee -a "$GITHUB_STEP_SUMMARY" || rc=${PIPESTATUS[0]}
+          exit "$rc"
