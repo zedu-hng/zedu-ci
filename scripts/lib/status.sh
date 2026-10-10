@@ -3,7 +3,8 @@
 # token, and GitHub caps statuses per commit and context. Needs REPO and GH_TOKEN.
 #
 #   status_set <sha> <context> <state> <description> [target_url]
-#     Sets status_outcome to "posted" or "unchanged". Fails only when the write fails. The commit's
+#     Sets status_outcome to "posted" or "unchanged". Fails only when the write fails on all three
+#     attempts (retried after 3s and 6s: a status that never lands can leave a PR blocked). The commit's
 #     current statuses are read once per sha and kept up to date with this function's own writes, so
 #     call it directly, not in $(...), or the cache is lost with the subshell.
 
@@ -18,8 +19,13 @@ status_set() {
     status_outcome=unchanged
     return 0
   fi
-  gh api "repos/$REPO/statuses/$sha" -f context="$context" -f state="$state" -f description="$desc" \
-    ${url:+-f target_url="$url"} >/dev/null || return 1
+  local attempt=1
+  until gh api "repos/$REPO/statuses/$sha" -f context="$context" -f state="$state" -f description="$desc" \
+    ${url:+-f target_url="$url"} >/dev/null; do
+    [ "$attempt" -lt 3 ] || return 1
+    sleep $((attempt * 3))
+    attempt=$((attempt + 1))
+  done
   _status_current=$(awk -F'|' -v c="$context" '$1 != c' <<< "$_status_current"; echo "$context|$state|$desc")
   status_outcome=posted
 }

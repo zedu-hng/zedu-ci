@@ -198,5 +198,46 @@ RN=.github/workflows/reviewer-notify.yml
 check "reviewer-notify: build context comes from the input" "1" "$(grep -c -E '^  BUILD_CONTEXT: \$\{\{ inputs\.build_context \}\}$' "$RN")"
 check "reviewer-notify: input defaults to Fork build" "Fork build" "$(awk '/build_context:/{f=1} f&&/default:/{sub(/^ *default: */,""); print; exit}' "$RN")"
 
+# status_set retries a failed write. A status that never lands (Build) leaves the PR out of the queue.
+W2=$(mktemp)
+gh() {
+  case "$*" in
+    *"/commits/"*"/status"*) printf '' ;;
+    *"/statuses/"*) echo w >> "$W2"; [ "$(grep -c . "$W2")" -gt "${FAIL_FIRST:-0}" ] ;;
+  esac
+}
+sleep() { :; }
+retry_case() { # name, failing writes, expected exit, expected writes
+  : > "$W2"; _status_sha=""; FAIL_FIRST=$2
+  status_set sha9 Build success Passed >/dev/null 2>&1; local rc=$?
+  check "status retry: $1, exit" "$3" "$rc"
+  check "status retry: $1, writes" "$4" "$(grep -c . "$W2")"
+}
+retry_case "first write lands" 0 0 1
+retry_case "recovers on the 3rd attempt" 2 0 3
+retry_case "gives up after 3 attempts" 99 1 3
+unset FAIL_FIRST; rm -f "$W2"
+PRC=.github/workflows/pr-review-comment.yml
+check "pr-review-comment: a failed status write fails the run" "1" "$(grep -c -E 'name: Fail if a status was not posted' "$PRC")"
+check "pr-review-comment: no write failure is only a warning" "0" "$(grep -c -E "warning::Couldn't post" "$PRC")"
+# Run the real "Post check statuses" step with a stub status_set and a results file.
+step_run() { # results-json [context whose write fails]
+  local d; d=$(mktemp -d)
+  ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts y["jobs"]["comment"]["steps"].find { |s| s["id"] == "statuses" }["run"]' "$PRC" > "$d/step.sh"
+  mkdir -p "$d/.zedu-ci/scripts/lib"
+  # shellcheck disable=SC2016 # the stub is written out literally
+  printf '%s\n' 'status_set() { echo "$2" >> "$POSTED"; [ "$2" != "$FAIL_CONTEXT" ]; }' > "$d/.zedu-ci/scripts/lib/status.sh"
+  printf '%s' "$1" > "$d/results.json"; : > "$d/posted"; : > "$d/out"
+  (cd "$d" && POSTED="$d/posted" GITHUB_OUTPUT="$d/out" FILE="$d/results.json" HEAD_SHA=x RUN_URL=u \
+    FAIL_CONTEXT="${2:-}" bash -e step.sh > /dev/null 2>&1); local rc=$?
+  echo "rc=$rc $(tr '\n' ' ' < "$d/out")posted=$(grep -c . "$d/posted")"; rm -rf "$d"
+}
+three='{"checks":[{"context":"ESLint","state":"success"},{"context":"Build","state":"success"},{"context":"Prettier","state":"failure"}]}'
+check "statuses step: all three post" "rc=0 failed=0 posted=3" "$(step_run "$three")"
+check "statuses step: one write fails, the others still post" "rc=0 failed=1 posted=3" "$(step_run "$three" Build)"
+check "statuses step: unreadable results fail loudly" "rc=0 failed=1 posted=0" "$(step_run '{not json')"
+check "statuses step: empty results post nothing" "rc=0 posted=0" "$(step_run '')"
+check "statuses step: unknown contexts are dropped" "rc=0 failed=0 posted=1" "$(step_run '{"checks":[{"context":"Evil","state":"success"},{"context":"Build","state":"success"}]}')"
+
 rm -f "$WRITES" "$READS"
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
