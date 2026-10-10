@@ -1,9 +1,10 @@
 name: Update branch
 
 # Reusable. Keeps contributor PR branches current with their base, so review and the fork build are
-# not done against stale code. Hourly, for each PR whose base has moved behind, it asks GitHub to
-# merge the base into the head (gh pr update-branch). A merge commit created this way is authored by
-# github-actions[bot] and PR rules' Single author check ignores it.
+# not done against stale code. Hourly, for each contributor PR, it compares the branch to its base
+# (mergeStateStatus reports BLOCKED for a behind PR that also awaits review, so it can't be used) and,
+# when behind, asks GitHub to merge the base into the head (gh pr update-branch). A merge commit
+# created this way is authored by github-actions[bot] and PR rules' Single author check ignores it.
 #
 # For a fork PR the base token usually can't push to the fork (the fork must allow maintainer edits),
 # so when the update fails this nudges the author and the team lead(s) to update it themselves. A
@@ -58,25 +59,42 @@ jobs:
           # shellcheck disable=SC2016 # jq programs use $name variables inside single quotes
           # shellcheck source=/dev/null
           source .zedu-ci/scripts/lib/open-prs.sh
-          open_prs_merge_state > prs.json || { echo "::error::Couldn't list open PRs (API error)."; exit 1; }
+          open_prs_for_update > prs.json || { echo "::error::Couldn't list open PRs (API error)."; exit 1; }
 
-          # One row per behind PR: number, fork owner, author, base.
+          # One row per candidate PR: number, fork owner, author, base, head ref.
           jq -r --arg repo "$REPO" '
             map(select((.baseRefName == "dev" or .baseRefName == "central-staging")
                 and .headRepository.nameWithOwner != $repo))
             | .[]
             | select(.isDraft == false)
-            | select(.mergeStateStatus == "BEHIND")
             | ([.labels.nodes[].name] | join(",")) as $labels
             | select(($labels | split(",") | index("sync")) == null and ($labels | split(",") | index("hotfix")) == null)
-            | [.number, (.headRepositoryOwner.login // ""), (.author.login // ""), .baseRefName]
-            | join("|")' prs.json > behind.txt
-          echo "$(grep -c . behind.txt || true) behind PR(s)"
+            | [.number, (.headRepositoryOwner.login // ""), (.author.login // ""), .baseRefName, .headRefName]
+            | join("|")' prs.json > candidates.txt
+          echo "$(grep -c . candidates.txt || true) candidate PR(s)"
 
           now=$(date +%s)
           declare -A leads_cache
-          while IFS='|' read -r num owner author base; do
+          # Branch names can hold '#' (which would start a URL fragment) or '%'; encode just those,
+          # leaving '/' alone since it is part of ordinary branch names and GitHub expects it literally.
+          # Org logins and the base refs here can't contain either.
+          enc() { local s=$1; s=${s//%/%25}; s=${s//#/%23}; printf '%s' "$s"; }
+          while IFS='|' read -r num owner author base headref; do
             [ -n "$num" ] || continue
+            # Is the branch behind its base? mergeStateStatus says BLOCKED for a PR that is behind and
+            # also awaits review, so compare the two refs directly; behind_by counts the commits.
+            if ! behind=$(gh api "repos/$REPO/compare/$(enc "$base")...$owner:$(enc "$headref")" \
+                 --jq '.behind_by // 0' 2>"$RUNNER_TEMP/compare.err"); then
+              echo "PR #$num: couldn't compare $owner:$headref: $(tr -d '\r' < "$RUNNER_TEMP/compare.err" 2>/dev/null)"
+              rm -f "$RUNNER_TEMP/compare.err"
+              continue
+            fi
+            rm -f "$RUNNER_TEMP/compare.err"
+            if [ "${behind:-0}" -le 0 ]; then
+              echo "PR #$num: up to date with $base"
+              continue
+            fi
+            echo "PR #$num: $behind commit(s) behind $base"
             # Throttle per PR: the marker comment's updated_at bounds attempts.
             # shellcheck disable=SC2016 # $m is a jq variable
             existing=$(gh api --paginate "repos/$REPO/issues/$num/comments?per_page=100" \
@@ -117,4 +135,4 @@ jobs:
             else
               gh api -X POST "repos/$REPO/issues/$num/comments" -f body="$body" >/dev/null
             fi
-          done < behind.txt
+          done < candidates.txt

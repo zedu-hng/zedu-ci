@@ -50,19 +50,19 @@ open_prs() {
     commits(last: 1) { nodes { commit { status { contexts { context state description } } } } }'
 }
 
-#   open_prs_merge_state
-#     number, isDraft, baseRefName, author.login, headRepository.nameWithOwner,
-#     headRepositoryOwner.login, labels (first 100) and mergeStateStatus. Only update-branch needs
-#     mergeStateStatus, so only it pays for computing it.
+#   open_prs_for_update
+#     number, isDraft, baseRefName, headRefName, author.login, headRepository.nameWithOwner,
+#     headRepositoryOwner.login and labels (first 100). update-branch compares each branch against its
+#     base to see if it moved. It does not use mergeStateStatus: that reports BLOCKED, not BEHIND, for
+#     a PR that is behind and also awaits a review, so it would miss the contributor PRs it targets.
 
-open_prs_merge_state() {
-  _open_prs_query 25 '
-    number isDraft baseRefName
+open_prs_for_update() {
+  _open_prs_query 30 '
+    number isDraft baseRefName headRefName
     author { login }
     headRepository { nameWithOwner }
     headRepositoryOwner { login }
-    labels(first: 100) { nodes { name } }
-    mergeStateStatus'
+    labels(first: 100) { nodes { name } }'
 }
 
 #   open_prs_with_review_state
