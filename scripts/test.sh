@@ -114,8 +114,8 @@ printf 'x(0x2607+-0x1*parseInt(0xbfd)+-0x103d*Math.ceil(0x1));\n' > "$OBF/src/a.
 obf "hex arithmetic" 1
 printf 'var l = "%s";\n' "$(head -c 9000 /dev/zero | tr '\0' a)" > "$OBF/src/a.js"; obf_commit long
 obf "9000-char line in JS" 1
-printf 'var l = "%s";\n' "$(head -c 9000 /dev/zero | tr '\0' a)" > "$OBF/data.txt"; printf 'var s = 1;\n' > "$OBF/src/a.js"; obf_commit longtxt
-obf "long line in a .txt passes" 0
+printf 'var l = "%s";\n' "$(head -c 9000 /dev/zero | tr '\0' a)" > "$OBF/data.csv"; printf 'var s = 1;\n' > "$OBF/src/a.js"; obf_commit longcsv
+obf "long line in a .csv passes" 0
 printf 'fetch("https://eth.drpc.org/x");\n' > "$OBF/src/a.js"; obf_commit ioc
 obf "known indicator" 1
 
@@ -147,6 +147,31 @@ printf 'node_modules\ntemp_auto_push.bat\n' > "$OBF/.gitignore"; obf_commit igno
 obf "gitignore hides loader artifact" 1
 printf 'var s = 8;\n' > "$OBF/src/a.js"; printf '{}\n' > "$OBF/branch_structure.json"; obf_commit bsj
 obf "branch_structure.json" 1
+
+# Parser differentials: the PR controls .gitattributes, NUL bytes, file names and the whitespace it pads with.
+hide="x();${tabs}fetch(\"https://eth.drpc.org/a\");"
+printf '%s\n' "$hide" > "$OBF/src/attr.js"; printf 'src/attr.js -diff\n' > "$OBF/.gitattributes"; obf_commit attr
+obf "gitattributes -diff does not hide a file" 1
+printf '//\000\n%s\n' "$hide" > "$OBF/src/nul.js"; obf_commit nul
+obf "NUL byte does not hide a file" 1
+nbsp=$(printf '\302\240%.0s' $(seq 1 300))
+printf 'x();%sPAYLOAD();\n' "$nbsp" > "$OBF/src/nbsp.js"; obf_commit nbsp
+obf "NBSP padding" 1
+printf 'x();%sPAYLOAD();\n' "$(printf '\f%.0s' $(seq 1 300))" > "$OBF/src/ff.js"; obf_commit ff
+obf "form-feed padding" 1
+printf '%s\n' "$hide" > "$OBF/note.txt"; obf_commit txt
+obf "padded payload in a .txt" 1
+printf '%s\n' "$hide" > "$OBF/src/lib.min.js"; obf_commit minjs
+obf "padded payload in a .min.js" 1
+printf 'var _0xa1b2c3=1,_0xd4e5f6=2,_0x112233=3;\n' > "$OBF/src/data.log"; obf_commit log
+obf "_0x code in a .log" 1
+printf '%s\n' "$hide" > "$OBF/:(exclude)magic.js"; obf_commit magic
+obf "pathspec-magic file name" 1
+printf '%s\n' "$hide" > "$OBF/$(printf 'nl\n::warning::forged.js')"; obf_commit newline
+obf "newline in a file name" 1
+check "obfuscation: file name cannot forge a workflow command" "0" "$(grep -c '^::warning::forged' "$OBF/out.txt")"
+printf '| a%s| b |\n' "$(printf ' %.0s' $(seq 1 300))" > "$OBF/table.md"; printf 'a  b  c\n' > "$OBF/notes.md"; printf '{"a": 1}\n' > "$OBF/data.json"; obf_commit benign
+obf "plain md and json pass" 0
 
 (cd "$OBF" && SWEEP=1 bash "$OLDPWD/scripts/obfuscation-scan.sh" "$(git hash-object -t tree -w /dev/null)" HEAD > out.txt 2>&1); check "obfuscation: sweep skips the added-file wiring rule" "0" "$(grep -c 'a file this PR adds' "$OBF/out.txt")"
 

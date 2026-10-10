@@ -6,8 +6,10 @@
 # a ~29 KB obfuscated line pushed off-screen behind thousands of tabs, appended to a config file or
 # saved as api.js, and started from package.json scripts. Reads the diff as text. Never runs PR code.
 #
-# Only the lines a PR adds are judged, so old code never fails a new PR. Padding is collapsed
-# before the other rules run, so code hidden behind it is judged too. Findings:
+# Only the lines a PR adds are judged, so old code never fails a new PR. The PR controls the diff
+# view, so files are diffed as text (-a), padding includes JS whitespace beyond space and tab, and
+# rules follow content, not the file extension (Node loads an unknown extension as JavaScript).
+# Padding is collapsed before the other rules run, so code hidden behind it is judged too. Findings:
 #   whitespace   200+ whitespace characters followed by code on the same line (any file but docs)
 #   long line    8000+ characters on one line (JS/TS files); 1500+ in config and entry-point files
 #   obfuscated   _0x identifiers or hex arithmetic, the javascript-obfuscator shape (JS/TS files)
@@ -38,14 +40,19 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 found=0
 
+# File names and messages are attacker-influenced, so strip anything that can start a workflow
+# command or break the Markdown summary: control characters, and for paths also , : % and friends.
 report() { # file line message
+  local f m
+  f=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/@+ ()[]=-' '?')
+  m=$(printf '%s' "$3" | LC_ALL=C tr -d '\000-\037\177')
   found=$((found + 1))
-  printf '::error file=%s,line=%s::%s\n' "$1" "$2" "$3"
+  printf '::error file=%s,line=%s::%s\n' "$f" "$2" "$m"
   # shellcheck disable=SC2016 # literal backticks for Markdown
-  printf -- '- `%s:%s` %s\n' "$1" "$2" "$3"
+  printf -- '- `%s:%s` %s\n' "$f" "$2" "$m"
 }
 
-if ! git diff --name-status -z --no-renames --no-ext-diff --diff-filter=AM "$base" "$head" > "$tmp/files.z"; then
+if ! git --literal-pathspecs diff --name-status -z --no-renames --no-ext-diff --diff-filter=AM "$base" "$head" > "$tmp/files.z"; then
   echo "::error::Obfuscation scan could not diff $base..$head. Check the checkout depth."
   exit 2
 fi
@@ -64,6 +71,9 @@ function emit(l, m) { if (shown++ < 5) printf "%d\t%s\n", l, m }
 BEGIN {
   for (i = 0; i < pad; i++) padre = padre "[ \t]"
   padre = padre "[ \t]*[^ \t\r]"
+  # Whitespace JS accepts besides space and tab: VT, FF, NBSP, BOM, U+1680, U+2000-200A, U+202F,
+  # U+205F, U+3000. Folded to a space (bytes, C locale) so padding with them is judged too.
+  jsws = "[\013\014]|\302\240|\357\273\277|\341\232\200|\342\200[\200-\212\257]|\342\201\237|\343\200\200"
   if (!dump) {
     while ((getline p < iocs) > 0) {
       if (p ~ /^[ \t]*(#|$)/) continue
@@ -78,32 +88,43 @@ BEGIN {
   t = substr($0, 2); cur = ln++
   if (dump) { print cur "\t" t; next }
   u = t
-  if (match(t, padre)) {
+  gsub(jsws, " ", u)
+  # Markdown table rows are padded to align columns, and a line that starts with | is not code.
+  if (!(mdtable && u ~ /^[ \t]*\|/) && match(u, padre)) {
     emit(cur, "code hidden after " pad "+ whitespace characters (column " RSTART ")")
     gsub(/[ \t][ \t]+/, " ", u)
   }
   for (i = 1; i <= nany; i++) if (u ~ any[i]) { emit(cur, "matches known malware indicator: " any[i]); break }
   if (cfg && length(u) >= cfglong) emit(cur, "config or entry-point line is " length(u) " characters long")
-  if (code) {
-    if (!cfg && length(u) >= long) emit(cur, "line is " length(u) " characters long")
-    # Patterns are strings: a /regex/ passed to a function would be evaluated as $0 ~ /regex/.
-    if (cnt(u, "_0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]+") >= 3 || cnt(u, "0x[0-9a-fA-F]+ *[-+*]") >= 3)
-      emit(cur, "obfuscated code (_0x identifiers or hex arithmetic)")
-    for (i = 1; i <= nioc; i++) if (u ~ ioc[i]) { emit(cur, "matches known malware indicator: " ioc[i]); break }
-  }
+  if (longrule && !cfg && length(u) >= long) emit(cur, "line is " length(u) " characters long")
+  # Patterns are strings: a /regex/ passed to a function would be evaluated as $0 ~ /regex/.
+  if (obfrule && (cnt(u, "_0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]+") >= 3 || cnt(u, "0x[0-9a-fA-F]+ *[-+*]") >= 3))
+    emit(cur, "obfuscated code (_0x identifiers or hex arithmetic)")
+  if (iocrule) for (i = 1; i <= nioc; i++) if (u ~ ioc[i]) { emit(cur, "matches known malware indicator: " ioc[i]); break }
   next
 }
 AWK
 
-diff_of() { git diff -U0 --no-ext-diff --no-textconv --no-renames "$base" "$head" -- "$1"; }
+# -a: judge every file as text. Without it git prints "Binary files differ" for a file with a NUL
+# byte or a .gitattributes "-diff" entry (both set by the PR itself) and nothing is scanned.
+# --literal-pathspecs: a file name is never glob or pathspec magic (":(exclude)" and the like).
+diff_of() { git --literal-pathspecs diff -a -U0 --no-ext-diff --no-textconv --no-renames "$base" "$head" -- "$1"; }
 
 while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   name=${path##*/}
   ext=$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')
-  code=0; text=1
-  case "$ext" in js | mjs | cjs | jsx | ts | tsx | mts | cts) code=1 ;; esac
-  case "$ext" in md | mdx | txt | lock | svg | map | csv | snap | log) text=0 ;; esac
-  case "$name" in *.min.js | *.min.mjs | *.min.css | *-lock.json | pnpm-lock.yaml) code=0; text=0 ;; esac
+  # Node loads an unknown extension as JavaScript, so rules follow content, not the extension. Only
+  # formats that cannot be loaded as code, or that are long by nature, are exempt from a rule.
+  text=1; longrule=1; obfrule=1; iocrule=1; mdtable=0
+  case "$ext" in md | mdx) mdtable=1 ;; esac
+  case "$ext" in
+    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | pdf | zip | gz | mp3 | mp4 | mov | wasm) text=0 ;;
+    json | svg | map | csv | snap | lock | yaml | yml) longrule=0; obfrule=0 ;;
+    m | mm | swift | kt | java | c | h | cc | cpp | gradle) iocrule=0 ;;
+  esac
+  case "$name" in
+    *.min.* | *-lock.json | pnpm-lock.yaml) longrule=0 ;;
+  esac
   cfg=0
   case "$name" in
     babel.config.* | postcss.config.* | tailwind.config.* | next.config.* | eslint.config.* | .eslintrc* \
@@ -139,12 +160,12 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   if [ "$text" = 1 ]; then
     while IFS=$'\t' read -r ln msg; do
       [ -n "$ln" ] && report "$path" "$ln" "$msg"
-    done < <(diff_of "$path" | awk -v pad="$pad" -v long="$long" -v code="$code" -v cfg="$cfg" -v cfglong="$cfglong" -v iocs="$iocs" -v dump=0 "$awk_prog")
+    done < <(diff_of "$path" | awk -v pad="$pad" -v long="$long" -v mdtable="$mdtable" -v longrule="$longrule" -v obfrule="$obfrule" -v iocrule="$iocrule" -v cfg="$cfg" -v cfglong="$cfglong" -v iocs="$iocs" -v dump=0 "$awk_prog")
   fi
 
   if [ "$name" = package.json ]; then
     while IFS=$'\t' read -r ln line; do
-      for ref in $([ "${SWEEP:-0}" = 1 ] || printf '%s' "$line" | grep -oE 'node +(--?[A-Za-z-]+ +)*[./A-Za-z0-9_@-]+\.(c|m)?js' | awk '{print $NF}'); do
+      for ref in $([ "${SWEEP:-0}" = 1 ] || printf '%s' "$line" | grep -oE 'node +(--?[A-Za-z-]+(=[^ ]+)? +)*[./A-Za-z0-9_@-]+' | awk '{print $NF}'); do
         ref=${ref#./}
         [ "$(dirname "$path")" != . ] && ref=$(dirname "$path")/$ref
         grep -qxF "$ref" "$tmp/added.txt" && report "$path" "$ln" "script runs $ref, a file this PR adds"
@@ -152,7 +173,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       if printf '%s' "$line" | grep -qE '"(pre|post)?install"|"prepare"' && printf '%s' "$line" | grep -qE 'curl|wget|https?://'; then
         report "$path" "$ln" "install script fetches from the network"
       fi
-    done < <(diff_of "$path" | awk -v pad="$pad" -v long="$long" -v code=0 -v iocs="$iocs" -v dump=1 "$awk_prog")
+    done < <(diff_of "$path" | awk -v pad="$pad" -v long="$long" -v iocs="$iocs" -v dump=1 "$awk_prog")
   fi
 done < "$tmp/files.z"
 
