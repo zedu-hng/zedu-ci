@@ -1,0 +1,5 @@
+# Git blob SHAs of known malicious files. One per line: <40-hex> <note>. '#' starts a comment.
+# A PR that adds or changes a file with one of these blobs fails Obfuscation scan, whatever the
+# file is named. `git hash-object <file>` prints a file's blob SHA.
+a3ce070d03a096e6bb39fbd206aec58be0d1b7f7 api.js loader: 29 KB obfuscated line behind leading tabs, run via package.json scripts (zedu-fe #813 #828 #854, zedu-vulcan/zedu-mobile 9332400)
+8e14837c2c9eb2fd21e15ddbd40b267491764593 fa-solid-400.woff2 dropper: JS disguised as a font, started by a hidden .vscode folderOpen task
