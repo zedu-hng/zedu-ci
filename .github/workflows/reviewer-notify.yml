@@ -22,12 +22,20 @@ name: Reviewer notify
 # dispatches this workflow itself when its result changes.
 
 # Caller: pull_request_target (ready_for_review, labeled, unlabeled, synchronize, reopened,
-# converted_to_draft, closed), workflow_run on "Lead approval" and "Fork build" (completed), schedule
+# converted_to_draft, closed), workflow_run on "Lead approval" and the workflow that writes the build
+# status (completed): "Fork build", or "PR Review comment" when build_context is "Build". Plus schedule
 # and workflow_dispatch. The concurrency group lives in the caller.
 # Caller permissions: contents: read, pull-requests: write, statuses: read.
 
 on:
   workflow_call:
+    inputs:
+      build_context:
+        description: >-
+          Commit status that must be green before a PR is queued. "Fork build" for mobile and desktop,
+          whose build runs in the contributor's fork. FE passes "Build", the result of its own PR checks.
+        type: string
+        default: Fork build
 
 permissions:
   contents: read
@@ -40,7 +48,7 @@ env:
   REPO: ${{ github.repository }}
   CI_REPO: zedu-hng/zedu-ci
   LEAD_CONTEXT: Lead approved
-  BUILD_CONTEXT: Fork build
+  BUILD_CONTEXT: ${{ inputs.build_context }}
   REVIEW_LABEL: ready-for-review
   QUEUED_LABEL: queued
   CLAIMED_LABEL: claimed
