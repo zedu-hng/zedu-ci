@@ -2,7 +2,8 @@ name: PR scans
 
 # Reusable. Review-org replacement for the semgrep half of Zedu's "Security checks" and the ClamAV half
 # of "Malware scan" (both disabled in zedu-hng). Same commands and flags, with the per-repo parts as
-# inputs. A separate workflow from PR checks so the ClamAV database update doesn't hold up the rest.
+# inputs. Also runs the obfuscation scan (scripts/obfuscation-scan.sh): hidden or obfuscated code in
+# the lines a PR adds. A separate workflow from PR checks so the ClamAV database update doesn't hold up the rest.
 #
 # Untrusted: runs on PR code with a read-only token. Uploads pr-checks-results, which
 # pr-review-comment.yml posts as commit statuses.
@@ -42,9 +43,31 @@ jobs:
     env:
       SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      # Depth 2: HEAD is the PR merge commit and HEAD^1 is the base, which the obfuscation scan diffs.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 2
           persist-credentials: false
+
+      # First, with its own copy of the scripts that is removed again, so Semgrep and ClamAV never
+      # see zedu-ci's files. Reads the PR diff as text; never runs PR code.
+      - name: Check out obfuscation scan
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Obfuscation scan
+        id: obfuscation
+        continue-on-error: true
+        run: |
+          rc=0
+          bash .zedu-ci/scripts/obfuscation-scan.sh HEAD^1 HEAD | tee -a "$GITHUB_STEP_SUMMARY" || rc=${PIPESTATUS[0]}
+          rm -rf .zedu-ci
+          exit "$rc"
 
       - name: Semgrep
         id: semgrep
@@ -95,6 +118,7 @@ jobs:
         env:
           SEMGREP: ${{ steps.semgrep.outcome }}
           CLAMAV: ${{ steps.clamav.outcome }}
+          OBFUSCATION: ${{ steps.obfuscation.outcome }}
         run: |
           : > results.tsv
           row() {
@@ -104,6 +128,7 @@ jobs:
           }
           row "Semgrep" "$SEMGREP"
           row "ClamAV" "$CLAMAV"
+          row "Obfuscation scan" "$OBFUSCATION"
 
       # shared:publish-results begin
       # Last, after every scan, so the scanners never see zedu-ci's files. Same in every checks

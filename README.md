@@ -48,7 +48,8 @@ callers never ship upstream.
 |---|---|---|
 | `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review (zedu-mobile) | `pull_request` |
 | `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
-| `pr-scans.yml` | Semgrep and ClamAV, with per-repo rule packs, paths and excludes | `pull_request` |
+| `pr-scans.yml` | Semgrep, ClamAV and the obfuscation scan, with per-repo rule packs, paths and excludes | `pull_request` |
+| `obfuscation-sweep.yml` | Weekly full-tree run of the obfuscation scan on a repo's default branch | `schedule`, `workflow_dispatch` (caller) |
 | `fork-build.yml` | Relays the fork's PR build as `Fork build`, posts `Backend dependency`, comments the artifacts | `pull_request_target`, `issue_comment`, `workflow_dispatch`, `schedule` |
 | `pr-build-react-native.yml` | Fork side: Android APK and iOS simulator build (zedu-mobile) | `push`, `workflow_dispatch` in the fork |
 | `pr-build-flutter.yml` | Fork side: macOS, Windows and Linux builds (zedu-desktop) | `push`, `workflow_dispatch` in the fork |
@@ -90,6 +91,7 @@ the workflow and need no second SHA in the callers:
 | `lib/docs-only.sh` (`docs_only`: a Markdown-only PR needs no build) | build gate (fork side), fork build relay |
 | `lib/open-prs.sh` (`open_prs`, `open_prs_merge_state`, `open_prs_with_review_state`: paginated GraphQL reads of every open PR, small pages, one retry) | lead approval and fork build sweeps, reviewer notify, recheck, update-branch, pr-nudges |
 | `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
+| `obfuscation-scan.sh` (hidden or obfuscated code in the lines a PR adds: whitespace padding, giant lines, `_0x` code, loaders wired into `package.json`, disguised fonts; data in `obfuscation-iocs.txt` and `known-bad-blobs.txt`) | PR scans |
 
 In the checks workflows the checkout comes last, so the scanners never see zedu-ci's files. Whole
 jobs are shared as nested reusable workflows (`build-gate.yml`, called as
