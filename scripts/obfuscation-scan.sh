@@ -22,6 +22,8 @@
 #
 # Exit 0 clean, 1 findings, 2 could not read the diff.
 # Env: IOCS, BLOBS (file paths), PAD_MIN (200), LONG_MIN (8000), CFG_LONG_MIN (1500).
+#      LONG_ALLOW: space-separated path globs exempt from the long-line rules only (inline SVG data and
+#      the like). Set by a repo's sweep caller, never read from the PR.
 #      SWEEP=1 when scanning a whole tree (base = the empty tree): every file counts as added, so the
 #      package.json "runs a file this PR adds" rule is skipped.
 set -uo pipefail
@@ -35,6 +37,9 @@ blobs=${BLOBS:-$here/known-bad-blobs.txt}
 pad=${PAD_MIN:-200}
 long=${LONG_MIN:-8000}
 cfglong=${CFG_LONG_MIN:-1500}
+
+# read -a splits on spaces without expanding globs against the working directory.
+read -ra allow_globs <<< "${LONG_ALLOW:-}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -133,12 +138,18 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     *.min.* | *-lock.json | pnpm-lock.yaml | .pnp.cjs | .pnp.js | .pnp.loader.mjs) longrule=0 ;;
   esac
   cfg=0
+  allow=0
+  for g in ${allow_globs[@]+"${allow_globs[@]}"}; do
+    # shellcheck disable=SC2254 # the glob is the point
+    case "$path" in $g) allow=1 ;; esac
+  done
   case "$name" in
     babel.config.* | postcss.config.* | tailwind.config.* | next.config.* | eslint.config.* | .eslintrc* \
       | vite.config.* | vitest.config.* | webpack.config.* | metro.config.* | jest.config.* \
       | rollup.config.* | prettier.config.* | .prettierrc* | commitlint.config.* \
       | index.js | index.mjs | index.cjs | index.ts) cfg=1 ;;
   esac
+  [ "$allow" = 1 ] && longrule=0 && cfg=0
 
   case "$name" in
     temp_auto_push.bat | temp_interactive_push.bat | branch_structure.json)

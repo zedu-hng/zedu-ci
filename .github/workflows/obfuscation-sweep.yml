@@ -21,6 +21,10 @@ on:
         description: Branch to sweep. Empty means the repo's default branch.
         type: string
         default: ""
+      allow_long_paths:
+        description: Space-separated path globs exempt from the long-line rules only, e.g. "src/app/**/svgs/index.tsx" (inline SVG data). Padding, IOC and obfuscation rules still run.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -49,6 +53,7 @@ jobs:
       - name: Scan the whole tree
         env:
           SWEEP: "1"
+          LONG_ALLOW: ${{ inputs.allow_long_paths }}
         # shell: bash sets pipefail. The default shell does not, and tee would hide the exit code.
         shell: bash
         run: |
