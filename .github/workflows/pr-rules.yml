@@ -312,16 +312,28 @@ jobs:
               missing=""; n=0
               # A run of checkbox lines wrapped in <!-- choice --> ... <!-- /choice --> holds
               # alternatives (the change types, the mutually exclusive Yes/No answers): exactly one
-              # answer is required, not all of them. Every other checkbox is mandatory.
-              in_choice=false; choice_labels=""
+              # answer is required, not all. The tick must sit inside that same group's region of
+              # the body, so a label repeated in another group can't count here. Every checkbox
+              # outside a group is mandatory.
+              in_choice=false; choice_labels=""; group_idx=0
               choice_check() {
                 [ "$in_choice" = true ] || return 0
-                local hit=false label_norm
+                group_idx=$((group_idx + 1))
+                local region scope="" hit=false label_norm
+                region=$(awk -v k="$group_idx" '
+                  index($0, "<!-- choice -->") { n++; if (n == k) grab = 1; next }
+                  index($0, "<!-- /choice -->") { if (grab) exit }
+                  grab { print }' <<< "$BODY")
+                if [ -n "$region" ]; then scope=$(printf '%s\n' "$region" | norm); fi
                 while IFS= read -r label; do
                   [ -n "$label" ] || continue
                   label_norm=$(printf '%s' "$label" | norm)
                   [ -n "$label_norm" ] || continue
-                  if ticked "$label_norm"; then hit=true; break; fi
+                  if [ -n "$scope" ]; then
+                    if printf '%s\n' "$scope" | grep -qF "[x] $label_norm"; then hit=true; break; fi
+                  elif ticked "$label_norm"; then
+                    hit=true; break
+                  fi
                 done <<< "$choice_labels"
                 if [ "$hit" = false ]; then
                   missing="${missing}  - one of: ${choice_labels//$'\n'/; }"$'\n'; n=$((n + 1))
