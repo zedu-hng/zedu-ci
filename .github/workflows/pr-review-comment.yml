@@ -71,7 +71,7 @@ jobs:
         run: |
           [ -s "$FILE" ] || { echo "No results file; nothing to post."; exit 0; }
           # Every context any repo's PR checks or PR scans post; a name outside this list is dropped.
-          allowed='["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Go vet","Jest","PR review","Build","Semgrep","ClamAV","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"]'
+          allowed='["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Go vet","Jest","PR review","Build","Semgrep","ClamAV","Obfuscation scan","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"]'
           # shellcheck source=/dev/null
           source .zedu-ci/scripts/lib/status.sh
           # Read the results first. A jq failure inside a process substitution is swallowed: the loop would
