@@ -186,8 +186,10 @@ printf '%%PDF-1.4\nplain ascii body\n' > "$OBF/ok.pdf"; printf 'PK\003\004bin' >
 obf "real pdf and zip pass" 0
 printf 'var l = "%s";\n' "$(head -c 9000 /dev/zero | tr '\0' a)" > "$OBF/.pnp.cjs"; obf_commit pnp
 obf "long line in .pnp.cjs passes" 0
-printf 'var l = "%s";%s\nfetch("https://eth.drpc.org/a");\n' "$(head -c 9000 /dev/zero | tr '\0' a)" "$tabs" > "$OBF/.pnp.cjs"; obf_commit pnpbad
-obf "padding and IOC still run in .pnp.cjs" 1
+printf 'var l = "%s";%sx\n' "$(head -c 9000 /dev/zero | tr '\0' a)" "$tabs" > "$OBF/.pnp.cjs"; obf_commit pnppad
+obf "padding in .pnp.cjs" 1
+printf 'fetch("https://eth.drpc.org/a");\n' > "$OBF/.pnp.cjs"; obf_commit pnpioc
+obf "IOC in .pnp.cjs" 1
 (cd "$OBF" && printf '\000asm\001\000\000\000' > nul.wasm && git add -A && git -c user.name=t -c user.email=t@t commit -qm nul && bash "$OLDPWD/scripts/obfuscation-scan.sh" HEAD~1 HEAD 2>&1 | grep -c 'ignored null byte' > nulwarn.txt); check "obfuscation: no null-byte warnings" "0" "$(cat "$OBF/nulwarn.txt")"
 printf '%%PDF-1.4\n%s\n' "$hide" > "$OBF/hdr.pdf"; obf_commit pdfhdr
 obf "payload after a %PDF header" 1
