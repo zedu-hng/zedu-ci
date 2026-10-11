@@ -121,8 +121,9 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   text=1; longrule=1; obfrule=1; iocrule=1; mdtable=0
   case "$ext" in md | mdx) mdtable=1 ;; esac
   case "$ext" in
-    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | pdf | zip | gz | mp3 | mp4 | mov | wasm) text=0 ;;
+    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | zip | gz | mp3 | mp4 | mov | wasm) text=0 ;;
     json | svg | map | csv | snap | lock | yaml | yml) longrule=0; obfrule=0 ;;
+    pdf) longrule=0 ;; # compressed streams are long lines; a %PDF header does not exempt the rest
     m | mm | swift | kt | java | c | h | cc | cpp | gradle) iocrule=0 ;;
   esac
   case "$name" in
