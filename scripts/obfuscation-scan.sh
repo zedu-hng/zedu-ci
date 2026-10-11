@@ -121,6 +121,9 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   # has none and loads as JavaScript. Only a real extension earns an exemption.
   ext=''
   case "${name#.}" in *.*) ext=$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]') ;; esac
+  # The disguise check also reads a dot-file's suffix: a plain-text ".wasm" is still a disguised payload.
+  dext=''
+  case "$name" in *.*) dext=$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]') ;; esac
   # Node loads an unknown extension as JavaScript, so rules follow content, not the extension. Only
   # formats that cannot be loaded as code, or that are long by nature, are exempt from a rule.
   text=1; longrule=1; obfrule=1; iocrule=1; mdtable=0
@@ -160,15 +163,15 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     report "$path" 1 "known malicious file (blob $sha)"
   fi
 
-  case "$ext" in
+  case "$dext" in
     woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | pdf | zip | gz | mp3 | mp4 | mov | wasm)
       size=$(git cat-file -s "$head:$path" 2> /dev/null || echo 0)
       printable_only=$(git show "$head:$path" 2> /dev/null | head -c 512 | tr -d '[:print:][:space:]' | wc -c)
       magic=$(git show "$head:$path" 2> /dev/null | head -c 4 | tr -d '\000')
       # A real PDF can have an all-ASCII first 512 bytes, so it is judged by its %PDF header instead.
-      [ "$ext" = pdf ] && [ "$magic" = '%PDF' ] && printable_only=1
+      [ "$dext" = pdf ] && [ "$magic" = '%PDF' ] && printable_only=1
       if [ "$size" -gt 0 ] && [ "$printable_only" -eq 0 ]; then
-        report "$path" 1 "a .$ext file that is plain text, not binary (disguised payload)"
+        report "$path" 1 "a .$dext file that is plain text, not binary (disguised payload)"
       fi ;;
   esac
 

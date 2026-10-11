@@ -184,6 +184,9 @@ printf '//\001\n%s\n' "$hide" > "$OBF/ctl.png"; obf_commit ctlpng
 obf "JS behind a control byte saved as .png" 1
 printf '%%PDF-1.4\nplain ascii body\n' > "$OBF/ok.pdf"; printf 'PK\003\004bin' > "$OBF/ok.zip"; obf_commit realbin
 obf "real pdf and zip pass" 0
+printf 'just some words\n' > "$OBF/.wasm"; obf_commit dotwasmplain
+obf "plain text saved as a .wasm dot-file" 1
+check "obfuscation: dot-file disguise is reported as plain text" "1" "$(grep -c 'plain text, not binary' "$OBF/out.txt" | awk '{print ($1 > 0)}')"
 printf 'var l = "%s";\n' "$(head -c 9000 /dev/zero | tr '\0' a)" > "$OBF/.pnp.cjs"; obf_commit pnp
 obf "long line in .pnp.cjs passes" 0
 printf 'var l = "%s";%sx\n' "$(head -c 9000 /dev/zero | tr '\0' a)" "$tabs" > "$OBF/.pnp.cjs"; obf_commit pnppad
