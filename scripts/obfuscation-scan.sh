@@ -129,7 +129,8 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     m | mm | swift | kt | java | c | h | cc | cpp | gradle) iocrule=0 ;;
   esac
   case "$name" in
-    *.min.* | *-lock.json | pnpm-lock.yaml) longrule=0 ;;
+    # Yarn Plug'n'Play files are generated, and one line holds the whole package map.
+    *.min.* | *-lock.json | pnpm-lock.yaml | .pnp.cjs | .pnp.js | .pnp.loader.mjs) longrule=0 ;;
   esac
   cfg=0
   case "$name" in
@@ -152,7 +153,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | pdf | zip | gz | mp3 | mp4 | mov | wasm)
       size=$(git cat-file -s "$head:$path" 2> /dev/null || echo 0)
       printable_only=$(git show "$head:$path" 2> /dev/null | head -c 512 | tr -d '[:print:][:space:]' | wc -c)
-      magic=$(git show "$head:$path" 2> /dev/null | head -c 4)
+      magic=$(git show "$head:$path" 2> /dev/null | head -c 4 | tr -d '\000')
       # A real PDF can have an all-ASCII first 512 bytes, so it is judged by its %PDF header instead.
       [ "$ext" = pdf ] && [ "$magic" = '%PDF' ] && printable_only=1
       if [ "$size" -gt 0 ] && [ "$printable_only" -eq 0 ]; then
