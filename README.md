@@ -1,6 +1,6 @@
 # zedu-ci
 
-Shared review-org workflows for `zedu-hng/zedu-fe`, `zedu-hng/zedu-mobile` and `zedu-hng/zedu-desktop`.
+Shared review-org workflows for `zedu-hng/zedu-fe`, `zedu-hng/zedu-mobile`, `zedu-hng/zedu-desktop` and `zedu-hng/zedu-be`.
 Each repo keeps short caller workflows that set the triggers and permissions, then call the files here.
 
 Nothing here ever runs against `zeduchat`. Release batches leave out `.github/` in every repo, so the
@@ -48,6 +48,7 @@ callers never ship upstream.
 |---|---|---|
 | `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review (zedu-mobile) | `pull_request` |
 | `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
+| `pr-checks-go.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, dependency audit, format, go vet, build, tests, PR review (zedu-be) | `pull_request` |
 | `pr-scans.yml` | Semgrep (optional), ClamAV and the obfuscation scan, with per-repo rule packs, paths and excludes | `pull_request` |
 | `obfuscation-sweep.yml` | Weekly full-tree run of the obfuscation scan on a repo's default branch | `schedule`, `workflow_dispatch` (caller) |
 | `fork-build.yml` | Relays the fork's PR build as `Fork build`, posts `Backend dependency`, comments the artifacts | `pull_request_target`, `issue_comment`, `workflow_dispatch`, `schedule` |
