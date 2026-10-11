@@ -16,7 +16,7 @@
 #   IOC          a line matching scripts/obfuscation-iocs.txt (JS/TS files; "@any" entries: any text file)
 #   loader file  temp_*push.bat or branch_structure.json
 #   known file   a file whose git blob SHA is in scripts/known-bad-blobs.txt
-#   disguised    a font or image that is plain text, not binary
+#   disguised    a font, image, PDF, archive, audio, video or wasm file that is plain text, not binary
 #   wiring       package.json runs a file the PR adds, or an install script fetches from the network
 #   auto-run     .vscode/tasks.json with runOn folderOpen
 #
@@ -112,14 +112,20 @@ diff_of() { git --literal-pathspecs diff -a -U0 --no-ext-diff --no-textconv --no
 
 while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   name=${path##*/}
-  ext=$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')
+  # Node takes the extension after the first character, so a dot-file (.pdf) or a name without a dot
+  # has none and loads as JavaScript. Only a real extension earns an exemption.
+  ext=''
+  case "${name#.}" in *.*) ext=$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]') ;; esac
   # Node loads an unknown extension as JavaScript, so rules follow content, not the extension. Only
   # formats that cannot be loaded as code, or that are long by nature, are exempt from a rule.
   text=1; longrule=1; obfrule=1; iocrule=1; mdtable=0
   case "$ext" in md | mdx) mdtable=1 ;; esac
   case "$ext" in
-    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | pdf | zip | gz | mp3 | mp4 | mov | wasm) text=0 ;;
+    # A name proves nothing about content, and one odd byte (a BOM, a NUL) defeats a binary sniff, so
+    # these are scanned too. Long lines are normal in binary data, so only that rule is off.
+    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | zip | gz | mp3 | mp4 | mov | wasm) longrule=0 ;;
     json | svg | map | csv | snap | lock | yaml | yml) longrule=0; obfrule=0 ;;
+    pdf) longrule=0 ;;
     m | mm | swift | kt | java | c | h | cc | cpp | gradle) iocrule=0 ;;
   esac
   case "$name" in
@@ -143,9 +149,12 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   fi
 
   case "$ext" in
-    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp)
+    woff | woff2 | ttf | otf | eot | llf | png | jpg | jpeg | gif | ico | webp | pdf | zip | gz | mp3 | mp4 | mov | wasm)
       size=$(git cat-file -s "$head:$path" 2> /dev/null || echo 0)
       printable_only=$(git show "$head:$path" 2> /dev/null | head -c 512 | tr -d '[:print:][:space:]' | wc -c)
+      magic=$(git show "$head:$path" 2> /dev/null | head -c 4)
+      # A real PDF can have an all-ASCII first 512 bytes, so it is judged by its %PDF header instead.
+      [ "$ext" = pdf ] && [ "$magic" = '%PDF' ] && printable_only=1
       if [ "$size" -gt 0 ] && [ "$printable_only" -eq 0 ]; then
         report "$path" 1 "a .$ext file that is plain text, not binary (disguised payload)"
       fi ;;
