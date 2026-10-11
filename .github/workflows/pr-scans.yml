@@ -16,13 +16,13 @@ on:
   workflow_call:
     inputs:
       semgrep_configs:
-        description: Space-separated Semgrep rule packs, e.g. "p/typescript p/react p/security-audit"
+        description: Space-separated Semgrep rule packs, e.g. "p/typescript p/react p/security-audit". Empty skips Semgrep.
         type: string
-        required: true
+        default: ""
       semgrep_paths:
-        description: Space-separated paths Semgrep scans
+        description: Space-separated paths Semgrep scans. Empty skips Semgrep.
         type: string
-        required: true
+        default: ""
       clamav_exclude_dirs:
         description: Space-separated directory patterns ClamAV skips (.git is always skipped)
         type: string
@@ -73,6 +73,7 @@ jobs:
 
       - name: Semgrep
         id: semgrep
+        if: inputs.semgrep_configs != '' && inputs.semgrep_paths != ''
         continue-on-error: true
         env:
           CONFIGS: ${{ inputs.semgrep_configs }}
@@ -128,7 +129,8 @@ jobs:
             [ "$2" = success ] || { state=failure; desc="Failed; see the PR scans run"; }
             printf '%s\t%s\t%s\n' "$1" "$state" "$desc" >> results.tsv
           }
-          row "Semgrep" "$SEMGREP"
+          # A skipped Semgrep (no rule packs for this repo) posts no status, so it can't read as a failure.
+          [ "$SEMGREP" = skipped ] || row "Semgrep" "$SEMGREP"
           row "ClamAV" "$CLAMAV"
           row "Obfuscation scan" "$OBFUSCATION"
 

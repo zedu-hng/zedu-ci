@@ -261,4 +261,16 @@ check "statuses step: empty results post nothing" "rc=0 posted=0" "$(step_run ''
 check "statuses step: unknown contexts are dropped" "rc=0 failed=0 posted=1" "$(step_run '{"checks":[{"context":"Evil","state":"success"},{"context":"Build","state":"success"}]}')"
 
 rm -f "$WRITES" "$READS"
+
+# pr-scans: Semgrep is optional. Run the real "Record results" step with each outcome.
+PRS=.github/workflows/pr-scans.yml
+d=$(mktemp -d)
+ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts y["jobs"]["scans"]["steps"].find { |s| s["name"] == "Record results" }["run"]' "$PRS" > "$d/rec.sh"
+rec() { (cd "$d" && SEMGREP=$1 CLAMAV=success OBFUSCATION=success bash rec.sh && cut -f1 results.tsv | tr '\n' ,); }
+check "pr-scans: skipped Semgrep posts no row" "ClamAV,Obfuscation scan," "$(rec skipped)"
+check "pr-scans: ran Semgrep posts a row" "Semgrep,ClamAV,Obfuscation scan," "$(rec success)"
+check "pr-scans: failed Semgrep still posts a row" "Semgrep,ClamAV,Obfuscation scan," "$(rec failure)"
+check "pr-scans: Semgrep step is skipped when unconfigured" "1" "$(grep -c "if: inputs.semgrep_configs != '' && inputs.semgrep_paths != ''" "$PRS")"
+rm -rf "$d"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }

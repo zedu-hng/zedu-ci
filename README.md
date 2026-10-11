@@ -48,7 +48,7 @@ callers never ship upstream.
 |---|---|---|
 | `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review (zedu-mobile) | `pull_request` |
 | `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
-| `pr-scans.yml` | Semgrep, ClamAV and the obfuscation scan, with per-repo rule packs, paths and excludes | `pull_request` |
+| `pr-scans.yml` | Semgrep (optional), ClamAV and the obfuscation scan, with per-repo rule packs, paths and excludes | `pull_request` |
 | `obfuscation-sweep.yml` | Weekly full-tree run of the obfuscation scan on a repo's default branch | `schedule`, `workflow_dispatch` (caller) |
 | `fork-build.yml` | Relays the fork's PR build as `Fork build`, posts `Backend dependency`, comments the artifacts | `pull_request_target`, `issue_comment`, `workflow_dispatch`, `schedule` |
 | `pr-build-react-native.yml` | Fork side: Android APK and iOS simulator build (zedu-mobile) | `push`, `workflow_dispatch` in the fork |
