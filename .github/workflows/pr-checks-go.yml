@@ -24,6 +24,10 @@ on:
         description: Run `go test ./...` as the Tests check
         type: boolean
         default: false
+      audit:
+        description: Run `govulncheck ./...` as the Dependency audit check
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -100,20 +104,27 @@ jobs:
 
       - name: Dependency audit
         id: audit
-        if: steps.install.outcome == 'success'
+        if: inputs.audit && steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
 
+      # Only the files the PR touches: a repo with legacy unformatted files would otherwise fail
+      # every PR until someone reformats the whole tree.
       - name: Format
         id: format
         if: steps.install.outcome == 'success'
         continue-on-error: true
         run: |
-          unformatted=$(gofmt -l .)
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "origin/$BASE_REF...HEAD" -- '*.go' | grep -v '^vendor/' || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No changed Go files; nothing to format-check."
+            exit 0
+          fi
+          unformatted=$(gofmt -l "${files[@]}")
           if [ -n "$unformatted" ]; then
-            echo "::error::These files are not gofmt-clean:"
+            echo "::error::These changed files are not gofmt-clean:"
             printf '%s\n' "$unformatted"
             exit 1
           fi
@@ -161,6 +172,7 @@ jobs:
         if: always()
         env:
           TESTS_ENABLED: ${{ inputs.tests }}
+          AUDIT_ENABLED: ${{ inputs.audit }}
           FILE_POLICY: ${{ steps.file_policy.outcome }}
           GITLEAKS: ${{ steps.gitleaks.outcome }}
           HEURISTICS: ${{ steps.heuristics.outcome }}
@@ -190,7 +202,7 @@ jobs:
           row "Gitleaks" "$GITLEAKS"
           row "Malware heuristics" "$HEURISTICS"
           row "Commit messages" "$COMMITLINT"
-          row "Dependency audit" "$AUDIT"
+          if [ "$AUDIT_ENABLED" = true ]; then row "Dependency audit" "$AUDIT"; fi
           row "Format" "$FORMAT"
           row "Go vet" "$VET"
           row "Build" "$BUILD"
