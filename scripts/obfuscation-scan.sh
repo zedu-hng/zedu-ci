@@ -38,6 +38,9 @@ pad=${PAD_MIN:-200}
 long=${LONG_MIN:-8000}
 cfglong=${CFG_LONG_MIN:-1500}
 
+# read -a splits on spaces without expanding globs against the working directory.
+read -ra allow_globs <<< "${LONG_ALLOW:-}"
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 found=0
@@ -136,7 +139,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   esac
   cfg=0
   allow=0
-  for g in ${LONG_ALLOW:-}; do
+  for g in ${allow_globs[@]+"${allow_globs[@]}"}; do
     # shellcheck disable=SC2254 # the glob is the point
     case "$path" in $g) allow=1 ;; esac
   done
