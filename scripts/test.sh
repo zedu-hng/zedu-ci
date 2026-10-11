@@ -178,6 +178,10 @@ printf '%s\n' "$hide" > "$OBF/.wasm"; obf_commit dotwasm
 obf "JS saved as a .wasm dot-file" 1
 printf '%s\n' "$hide" > "$OBF/zip"; obf_commit barezip
 obf "JS in a file named zip" 1
+printf '\357\273\277%s\n' "$hide" > "$OBF/bom.zip"; obf_commit bomzip
+obf "BOM-prefixed JS saved as .zip" 1
+printf '//\001\n%s\n' "$hide" > "$OBF/ctl.png"; obf_commit ctlpng
+obf "JS behind a control byte saved as .png" 1
 printf '%%PDF-1.4\nplain ascii body\n' > "$OBF/ok.pdf"; printf 'PK\003\004bin' > "$OBF/ok.zip"; obf_commit realbin
 obf "real pdf and zip pass" 0
 printf '%%PDF-1.4\n%s\n' "$hide" > "$OBF/hdr.pdf"; obf_commit pdfhdr
