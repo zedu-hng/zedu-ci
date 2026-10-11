@@ -50,7 +50,7 @@ jobs:
           source .zedu-ci/scripts/lib/open-prs.sh
           open_prs |
           jq -r '
-            ["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Jest","PR review","Build","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"] as $checks
+            ["File policy","Gitleaks","Malware heuristics","Commit messages","Dependency audit","Prettier","ESLint","TypeScript","Go vet","Jest","PR review","Build","Analyze","Format","Tests","Trivy","Forbidden patterns","Lazarus scanner"] as $checks
             | .[]
             | select(.baseRefName == "dev" or .baseRefName == "central-staging")
             | select([.commits.nodes[0].commit.status.contexts[]?
