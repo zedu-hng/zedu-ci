@@ -191,6 +191,14 @@ obf "padding in .pnp.cjs" 1
 printf 'fetch("https://eth.drpc.org/a");\n' > "$OBF/.pnp.cjs"; obf_commit pnpioc
 obf "IOC in .pnp.cjs" 1
 (cd "$OBF" && printf '\000asm\001\000\000\000' > nul.wasm && git add -A && git -c user.name=t -c user.email=t@t commit -qm nul && bash "$OLDPWD/scripts/obfuscation-scan.sh" HEAD~1 HEAD 2>&1 | grep -c 'ignored null byte' > nulwarn.txt); check "obfuscation: no null-byte warnings" "0" "$(cat "$OBF/nulwarn.txt")"
+lng=$(printf 'var l = "%s";\n' "$(head -c 9000 /dev/zero | tr '\0' a)")
+mkdir -p "$OBF/src/ui/svgs"; printf '%s\n' "$lng" > "$OBF/src/ui/svgs/index.tsx"; obf_commit lngsvg
+(cd "$OBF" && LONG_ALLOW='src/**/svgs/index.tsx' bash "$OLDPWD/scripts/obfuscation-scan.sh" HEAD~1 HEAD > out.txt 2>&1); check "obfuscation: LONG_ALLOW exempts a listed path" "0" "$?"
+(cd "$OBF" && bash "$OLDPWD/scripts/obfuscation-scan.sh" HEAD~1 HEAD > out.txt 2>&1); check "obfuscation: the same file fails without LONG_ALLOW" "1" "$?"
+printf '%s\n' "$lng" > "$OBF/src/ui/svgs/other.tsx"; obf_commit lngother
+(cd "$OBF" && LONG_ALLOW='src/**/svgs/index.tsx' bash "$OLDPWD/scripts/obfuscation-scan.sh" HEAD~1 HEAD > out.txt 2>&1); check "obfuscation: LONG_ALLOW does not cover other paths" "1" "$?"
+printf 'x();%sfetch("https://eth.drpc.org/a");\n' "$tabs" > "$OBF/src/ui/svgs/index.tsx"; obf_commit lngpad
+(cd "$OBF" && LONG_ALLOW='src/**/svgs/index.tsx' bash "$OLDPWD/scripts/obfuscation-scan.sh" HEAD~1 HEAD > out.txt 2>&1); check "obfuscation: LONG_ALLOW does not skip padding or IOC" "1" "$?"
 printf '%%PDF-1.4\n%s\n' "$hide" > "$OBF/hdr.pdf"; obf_commit pdfhdr
 obf "payload after a %PDF header" 1
 
