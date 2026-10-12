@@ -2,6 +2,7 @@
 import asyncio
 import io
 import os
+import shutil
 import socket
 import stat
 import tarfile
@@ -148,6 +149,33 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
         # read() only returns at EOF, so this fails by timeout if the connection were left open
         await asyncio.wait_for(reader.read(), 5)
         writer.close()
+
+    async def test_a_leftover_work_dir_is_replaced_not_reused(self):
+        victim = os.path.join(self.tmp, "victim")
+        with open(victim, "w") as f:
+            f.write("keep")
+        os.makedirs(os.path.join(agent.CFG["work"], "app"))
+        os.symlink(victim, os.path.join(agent.CFG["work"], "app", "zedu"))  # planted by a previous app
+        status, _, _ = await self.start()
+        self.assertEqual(status, 201)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "keep")  # extraction did not write through the old link
+        self.assertFalse(os.path.islink(os.path.join(agent.CFG["work"], "app", "zedu")))
+
+    async def test_a_work_dir_that_cannot_be_cleared_fails_closed(self):
+        real = shutil.rmtree
+
+        def stuck(path, *a, **k):  # best-effort cleanup (ignore_errors) is quiet; a strict delete fails
+            if not k.get("ignore_errors"):
+                raise PermissionError("cannot delete")
+        shutil.rmtree = stuck
+        try:
+            os.makedirs(agent.CFG["work"])
+            status, _, body = await self.start()
+        finally:
+            shutil.rmtree = real
+        self.assertEqual(status, 500)
+        self.assertIn("PermissionError", body.decode())
 
     async def test_busy_slot_names_the_holder(self):
         self.assertEqual((await self.start())[0], 201)

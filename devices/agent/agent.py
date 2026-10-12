@@ -23,6 +23,7 @@ import os
 import secrets
 import shutil
 import signal
+import stat
 import sys
 import tarfile
 import time
@@ -160,6 +161,24 @@ def safe_extract(archive, dest):
         tf.extractall(dest, filter="data")
 
 
+def fresh_work_dir():
+    """An empty work directory this process just created, or an error: never reuse an old one.
+
+    A previous session's files belong to the app user and the root agent cannot always delete them, so
+    a leftover tree could hold links planted by that app. The container restarts after every session;
+    if anything is left behind the start fails closed."""
+    work = CFG["work"]
+    if os.path.islink(work):
+        os.unlink(work)
+    elif os.path.lexists(work):
+        shutil.rmtree(work)  # raises when it cannot delete everything
+    os.makedirs(os.path.dirname(work), exist_ok=True)
+    os.mkdir(work, 0o700)
+    st = os.lstat(work)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+        raise OSError(f"work dir {work} is not a private directory")
+
+
 async def end_session(reason):
     if not slot.active and not slot.starting:
         return
@@ -261,6 +280,8 @@ async def api(method, path, query, headers, reader, writer):
             sys.stderr.flush()
             shutil.rmtree(CFG["work"], ignore_errors=True)
             writer.write(json_resp(500, {"error": f"{type(e).__name__}: {e}"}))
+            if CFG["exit_on_end"]:  # leave the slot to Docker's restart rather than serving it half-dirty
+                asyncio.get_running_loop().call_later(1, os._exit, 1)
         finally:
             slot.starting = False
     elif path == "/api/extend" and method == "POST":
@@ -282,8 +303,7 @@ async def api(method, path, query, headers, reader, writer):
 
 
 async def start_session(query, headers, reader, writer):
-    shutil.rmtree(CFG["work"], ignore_errors=True)
-    os.makedirs(CFG["work"], mode=0o700, exist_ok=True)
+    fresh_work_dir()
     archive = os.path.join(CFG["work"], "artifact.tar.gz")
     appdir = os.path.join(CFG["work"], "app")
     os.makedirs(appdir)
