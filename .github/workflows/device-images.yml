@@ -77,7 +77,7 @@ jobs:
           APP
           chmod +x art/zedu
           tar -czf art.tar.gz -C art zedu
-          resp=$(curl -fsS -X PUT -H 'Authorization: Bearer smoke' -H 'Expect:' --data-binary @art.tar.gz \
+          resp=$(curl -sS -X PUT -H 'Authorization: Bearer smoke' -H 'Expect:' --data-binary @art.tar.gz \
             'http://127.0.0.1:18080/api/session?pr=1&sha=smoke&who=ci')
           path=$(jq -r .path <<< "$resp")
           case "$path" in /s/*) ;; *) echo "No viewer path in: $resp"; exit 1 ;; esac

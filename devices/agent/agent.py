@@ -61,6 +61,7 @@ class Slot:
         self.extended = False
         self.proc = None
         self.ttl_task = None
+        self.viewers = set()
 
 
 slot = Slot()
@@ -163,7 +164,14 @@ async def end_session(reason):
         return
     proc = slot.proc
     task = slot.ttl_task
+    viewers = list(slot.viewers)
     slot.reset()
+    # A viewer authorised when the session began must not outlive it (open WebSockets, keep-alive).
+    for w in viewers:
+        try:
+            w.close()
+        except OSError:
+            pass
     if task and task is not asyncio.current_task():
         task.cancel()
     if proc:
@@ -352,7 +360,7 @@ async def handle(reader, writer):
             else:
                 writer.write(text_resp(403, "No active session for this link.\n"))
         elif valid_token(cookie_of(headers, COOKIE)):
-            await proxy(raw, reader, writer)
+            await proxy(raw, reader, writer, headers)
             return
         else:
             writer.write(text_resp(403, "No active session. Ask a reviewer to comment /test on the PR.\n"))
@@ -366,7 +374,16 @@ async def handle(reader, writer):
             pass
 
 
-async def proxy(raw, reader, writer):
+def force_close(raw):
+    """Rewrite a request head so upstream answers once and closes: every request is authorised."""
+    lines = raw[:-4].decode("latin-1").split("\r\n")
+    kept = [lines[0]] + [l for l in lines[1:] if not l.lower().startswith(("connection:", "keep-alive:"))]
+    return ("\r\n".join(kept) + "\r\nConnection: close\r\n\r\n").encode("latin-1")
+
+
+async def proxy(raw, reader, writer, headers):
+    if headers.get("upgrade", "").lower() != "websocket":
+        raw = force_close(raw)
     try:
         ur, uw = await asyncio.open_connection("127.0.0.1", CFG["upstream_port"])
     except OSError:
@@ -376,7 +393,11 @@ async def proxy(raw, reader, writer):
         return
     uw.write(raw)
     await uw.drain()
-    await asyncio.gather(pipe(reader, uw), pipe(ur, writer))
+    slot.viewers.add(writer)
+    try:
+        await asyncio.gather(pipe(reader, uw), pipe(ur, writer))
+    finally:
+        slot.viewers.discard(writer)
 
 
 async def main():

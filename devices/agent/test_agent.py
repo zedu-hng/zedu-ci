@@ -122,6 +122,33 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
         status, _, payload = await request(self.port, "GET", "/index.html", {"Cookie": cookie})
         self.assertEqual((status, payload), (200, b"hello from the app"))
 
+    async def test_plain_requests_are_closed_after_one_response(self):
+        self.assertEqual(agent.force_close(b"GET /a HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nCookie: c=1\r\n\r\n"),
+                         b"GET /a HTTP/1.1\r\nHost: x\r\nCookie: c=1\r\nConnection: close\r\n\r\n")
+
+    async def test_an_open_viewer_connection_dies_with_the_session(self):
+        stub = agent.CFG["session_cmd"]
+        with open(stub, "w") as f:  # an upstream that echoes bytes, standing in for the WebSocket
+            f.write('#!/usr/bin/env python3\nimport os, socketserver\n'
+                    'class H(socketserver.BaseRequestHandler):\n'
+                    '    def handle(self):\n'
+                    '        while (d := self.request.recv(4096)):\n'
+                    '            self.request.sendall(d)\n'
+                    'class S(socketserver.ThreadingTCPServer):\n    allow_reuse_address = True\n'
+                    'S(("127.0.0.1", int(os.environ["UPSTREAM_PORT"])), H).serve_forever()\n')
+        status, _, body = await self.start()
+        self.assertEqual(status, 201)
+        token = __import__("json").loads(body)["path"][3:]
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        writer.write((f"GET /websockify HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      f"Cookie: {agent.COOKIE}={token}\r\n\r\n").encode())
+        await writer.drain()
+        self.assertTrue((await asyncio.wait_for(reader.read(15), 5)).startswith(b"GET /websockify"))  # echoed head
+        await request(self.port, "DELETE", "/api/session", AUTH)
+        # read() only returns at EOF, so this fails by timeout if the connection were left open
+        await asyncio.wait_for(reader.read(), 5)
+        writer.close()
+
     async def test_busy_slot_names_the_holder(self):
         self.assertEqual((await self.start())[0], 201)
         status, _, body = await self.start(query="pr=99&sha=zzz&who=other")
