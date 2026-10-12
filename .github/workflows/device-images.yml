@@ -99,7 +99,11 @@ jobs:
           # A second session is refused while this one runs, and DELETE frees the slot.
           [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Authorization: Bearer smoke' -H 'Expect:' \
             --data-binary @art.tar.gz 'http://127.0.0.1:18080/api/session?pr=2')" = 409 ]
-          curl -fsS -X DELETE -H 'Authorization: Bearer smoke' http://127.0.0.1:18080/api/session > /dev/null
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H 'Authorization: Bearer smoke' http://127.0.0.1:18080/api/session || true)
+          [ "$code" = 200 ] || { echo "DELETE answered '$code'"; exit 1; }
+          sleep 3
+          # The process exits after a session so Docker restarts it clean.
+          [ "$(docker inspect slot --format '{{.State.Running}}')" = false ]
 
       - name: Publish
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

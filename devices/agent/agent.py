@@ -268,8 +268,10 @@ async def api(method, path, query, headers, reader, writer):
             slot.expires += CFG["extend"]
             writer.write(json_resp(200, status_obj()))
     elif path == "/api/session" and method == "DELETE":
-        await end_session("deleted")
+        # Answer first: ending the session closes viewers and, in the container, exits the process.
         writer.write(json_resp(200, {"state": "idle"}))
+        await writer.drain()
+        await end_session("deleted")
     else:
         writer.write(json_resp(400, {"error": "unknown endpoint"}))
 
