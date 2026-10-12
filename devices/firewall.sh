@@ -21,6 +21,10 @@ run iptables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 run iptables -A "$chain" -d "$subnet" -p tcp --dport "$agent_port" -j ACCEPT
 # Backends: connections addressed to the box public IP on 80 and 443 (they are DNAT-ed to Traefik).
 run iptables -A "$chain" -p tcp -m multiport --dports 80,443 -m conntrack --ctstate DNAT --ctorigdst "$host_ip" -j ACCEPT
+# Name lookups: Docker's resolver forwards from the slot's own network namespace to the box's upstream
+# resolvers, which are public addresses. Without this the app cannot resolve the backend.
+run iptables -A "$chain" -p udp --dport 53 -j ACCEPT
+run iptables -A "$chain" -p tcp --dport 53 -j ACCEPT
 # Everything private, link-local, carrier-grade NAT, and the box itself on any other port.
 for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 "$host_ip/32"; do
   run iptables -A "$chain" -d "$cidr" -j DROP

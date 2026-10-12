@@ -41,7 +41,7 @@ container (production flags, stub app, viewer link, cookie, busy slot) and publi
    network only, and Traefik joins it so it can route to them.
 2. Apply the egress rules: `sudo devices/firewall.sh devices <box public ip> --dry-run`, read the
    output, then run it without `--dry-run`. Persist them with `iptables-persistent`. Slots may reach
-   the internet and the box's own 80 and 443 (team backends sit behind Traefik), and nothing else.
+   the internet (web ports and DNS) and the box's own 80 and 443 (team backends sit behind Traefik), and nothing else.
 3. Create the Coolify application from `desktop/docker-compose.yml` on the `devices` destination. Set
    the domain `https://desktop.preview.groups.zedu.chat` (port 8080) and the secret `DEVICE_TOKEN` (a
    long random string, also stored as `DEVICE_TOKEN` in the zedu-hng repos that call the slot).
