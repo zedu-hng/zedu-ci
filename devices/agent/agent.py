@@ -2,7 +2,7 @@
 """Slot agent: runs one reviewer test session in a device-streaming container.
 
 A trusted zedu-ci workflow uploads the PR's build artifact (PUT /api/session), the agent starts it
-under a virtual display and hands back a link. The viewer is proxied to the container's noVNC
+under a virtual display and hands back a link, valid until the session ends. The viewer is proxied to the container's noVNC
 server only while the session's token is valid. A session ends at its TTL, on DELETE, or when the
 app exits; the process then exits so the container restarts clean (read-only root, tmpfs home).
 
@@ -245,6 +245,9 @@ async def wait_ready():
 async def read_body(reader, writer, headers, dest):
     if "chunked" in headers.get("transfer-encoding", "").lower() or "content-length" not in headers:
         writer.write(json_resp(411, {"error": "Content-Length required"}))
+        return False
+    if not headers["content-length"].isdigit():
+        writer.write(json_resp(400, {"error": "bad Content-Length"}))
         return False
     length = int(headers["content-length"])
     if length > CFG["max_bytes"]:

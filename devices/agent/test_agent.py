@@ -224,6 +224,12 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 422)
         self.assertIn("zedu not found", body.decode())
 
+    async def test_a_bad_content_length_is_rejected(self):
+        for value in ("-1", "abc", "1e3", " "):
+            status, _, _ = await request(self.port, "PUT", "/api/session", {**AUTH, "Content-Length": value}, b"")
+            self.assertIn(status, (400, 411), value)
+        self.assertEqual(__import__("json").loads((await request(self.port, "GET", "/api/status", AUTH))[2])["state"], "idle")
+
     async def test_oversize_artifact_is_rejected(self):
         agent.CFG["max_bytes"] = 10
         self.assertEqual((await self.start())[0], 413)

@@ -30,4 +30,14 @@ run iptables -A "$chain" -j DROP
 if [ "$dry" = --dry-run ] || ! iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2>/dev/null; then
   run iptables -I DOCKER-USER -s "$subnet" -j "$chain"
 fi
+
+# Traffic from a slot to the box itself (the bridge gateway, host-bound ports such as SSH or the
+# Coolify dashboard) goes through INPUT, not DOCKER-USER, so it needs its own rule: replies only.
+input=DEVICES-INPUT
+run iptables -N "$input" 2>/dev/null || run iptables -F "$input"
+run iptables -A "$input" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+run iptables -A "$input" -j DROP
+if [ "$dry" = --dry-run ] || ! iptables -C INPUT -s "$subnet" -j "$input" 2>/dev/null; then
+  run iptables -I INPUT -s "$subnet" -j "$input"
+fi
 echo "Rules for $net ($subnet) in place. Persist them with your distro's iptables-persistent."
