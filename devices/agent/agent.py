@@ -26,6 +26,7 @@ import signal
 import sys
 import tarfile
 import time
+import traceback
 from urllib.parse import parse_qs, urlsplit
 
 CFG = {
@@ -369,6 +370,9 @@ async def handle(reader, writer):
         await writer.drain()
     except (ConnectionError, OSError):
         pass
+    except Exception:  # a bug must show in the container log, not only as a dropped connection
+        traceback.print_exc()
+        sys.stderr.flush()
     finally:
         try:
             writer.close()

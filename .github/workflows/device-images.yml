@@ -86,7 +86,11 @@ jobs:
           cookie=$(curl -sS -D - -o /dev/null "http://127.0.0.1:18080$path" | tr -d '\r' | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p')
           [ -n "$cookie" ]
           [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/vnc.html)" = 403 ]
-          curl -fsS -H "Cookie: $cookie" http://127.0.0.1:18080/vnc.html | grep -qi novnc
+          if ! curl -sS -H "Cookie: $cookie" http://127.0.0.1:18080/vnc.html -o vnc.out -D vnc.hdr || ! grep -qi novnc vnc.out; then
+            echo "The viewer did not answer with noVNC:"; cat vnc.hdr; head -c 500 vnc.out
+            docker exec slot sh -c 'tail -n 30 /tmp/*.log'
+            exit 1
+          fi
 
           # The app runs as the unprivileged user and cannot read the agent's token.
           sleep 2
