@@ -235,6 +235,9 @@ check "claim sweep: created_at reads exist" "2" "$(grep -c -E 'jq .*created_at' 
 RN=.github/workflows/reviewer-notify.yml
 check "reviewer-notify: build context comes from the input" "1" "$(grep -c -E '^  BUILD_CONTEXT: \$\{\{ inputs\.build_context \}\}$' "$RN")"
 check "reviewer-notify: input defaults to Fork build" "Fork build" "$(awk '/build_context:/{f=1} f&&/default:/{sub(/^ *default: */,""); print; exit}' "$RN")"
+check "reviewer-notify: the cap comes from the input" "1" "$(grep -c -E '^  CAP: \$\{\{ inputs\.cap \}\}$' "$RN")"
+check "reviewer-notify: the cap defaults to 5" "5" "$(awk '/^      cap:/{f=1} f&&/default:/{gsub(/[" ]/,""); sub(/default:/,""); print; exit}' "$RN")"
+check "reviewer-notify: a non-numeric cap fails the run" "1" "$(grep -c 'cap must be a whole number' "$RN")"
 
 # status_set retries a failed write. A status that never lands (Build) leaves the PR out of the queue.
 W2=$(mktemp)
