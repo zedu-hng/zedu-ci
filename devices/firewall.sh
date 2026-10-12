@@ -1,17 +1,33 @@
 #!/usr/bin/env bash
 # Egress rules for the device slots' Docker network: a slot runs a PR's build, so it may reach the
 # internet and the box's own web ports (team backends sit behind Traefik) and nothing else.
-# Run as root on the box. Safe to re-run. `--dry-run` prints the rules without applying them.
-# Usage: devices/firewall.sh <docker network name> <host public ip> [--dry-run]
+# Run as root on the box. Safe to re-run. `--dry-run` prints the rules without applying them; `--check`
+# applies nothing and exits non-zero (naming what is missing) when the rules are not in place, which is
+# what a reboot does to them: they live in memory. devices-firewall.service re-applies them at boot.
+# Usage: devices/firewall.sh <docker network name> <host public ip> [--dry-run | --check]
 set -euo pipefail
-net=${1:?usage: firewall.sh <docker network> <host public ip> [--dry-run]}
-host_ip=${2:?usage: firewall.sh <docker network> <host public ip> [--dry-run]}
+net=${1:?usage: firewall.sh <docker network> <host public ip> [--dry-run | --check]}
+host_ip=${2:?usage: firewall.sh <docker network> <host public ip> [--dry-run | --check]}
 dry=${3:-}
 
 slot_ports=${SLOT_PORTS:-4180,8080}  # login proxy, agent
 subnet=$(docker network inspect "$net" --format '{{(index .IPAM.Config 0).Subnet}}')
 chain=DEVICES-EGRESS
+input=DEVICES-INPUT
 run() { if [ "$dry" = --dry-run ]; then echo "+ $*"; else "$@"; fi; }
+
+if [ "$dry" = --check ]; then
+  missing=0
+  iptables -S "$chain" > /dev/null 2>&1 || { echo "MISSING: chain $chain"; missing=1; }
+  iptables -S "$input" > /dev/null 2>&1 || { echo "MISSING: chain $input"; missing=1; }
+  # A chain rebuilt halfway (or flushed) exists but does not end in its DROP, so it lets everything through.
+  [ "$(iptables -S "$chain" 2> /dev/null | tail -n 1)" = "-A $chain -j DROP" ] || { echo "MISSING: final DROP in $chain"; missing=1; }
+  [ "$(iptables -S "$input" 2> /dev/null | tail -n 1)" = "-A $input -j DROP" ] || { echo "MISSING: final DROP in $input"; missing=1; }
+  iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2> /dev/null || { echo "MISSING: hook in DOCKER-USER for $subnet"; missing=1; }
+  iptables -C INPUT -s "$subnet" -j "$input" 2> /dev/null || { echo "MISSING: hook in INPUT for $subnet"; missing=1; }
+  [ "$missing" = 0 ] && echo "OK: the rules for $net ($subnet) are in place."
+  exit "$missing"
+fi
 
 run iptables -N "$chain" 2>/dev/null || run iptables -F "$chain"
 # Replies to what the viewer and Traefik opened.
@@ -42,11 +58,10 @@ fi
 
 # Traffic from a slot to the box itself (the bridge gateway, host-bound ports such as SSH or the
 # Coolify dashboard) goes through INPUT, not DOCKER-USER, so it needs its own rule: replies only.
-input=DEVICES-INPUT
 run iptables -N "$input" 2>/dev/null || run iptables -F "$input"
 run iptables -A "$input" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 run iptables -A "$input" -j DROP
 if [ "$dry" = --dry-run ] || ! iptables -C INPUT -s "$subnet" -j "$input" 2>/dev/null; then
   run iptables -I INPUT -s "$subnet" -j "$input"
 fi
-echo "Rules for $net ($subnet) in place. Persist them with your distro's iptables-persistent."
+echo "Rules for $net ($subnet) in place. They are held in memory: install devices-firewall.service so a reboot re-applies them (devices/README.md)."

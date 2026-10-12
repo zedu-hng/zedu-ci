@@ -1,0 +1,22 @@
+# Re-applies the device slots' firewall rules at boot. The rules live in kernel memory, so without this a
+# reboot removes them and the slot network is open again, silently. Install steps: devices/README.md.
+# /etc/default/devices-firewall holds NETWORK=<the slot service's Docker network> and HOST_IP=<public ip>.
+# The script is idempotent. It waits for Docker (it reads the network's subnet and uses its DOCKER-USER
+# chain) and retries until the network exists, because Docker brings the stack back after the unit starts.
+[Unit]
+Description=Egress rules for the device slots
+Documentation=https://github.com/zedu-hng/zedu-ci/blob/main/devices/README.md
+After=docker.service network-online.target
+Requires=docker.service
+ConditionPathExists=/etc/default/devices-firewall
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/default/devices-firewall
+ExecStart=/usr/local/sbin/devices-firewall.sh ${NETWORK} ${HOST_IP}
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target

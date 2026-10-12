@@ -390,4 +390,40 @@ check "device-session: the comment carries its marker" "yes" "$(dsrun '/test' | 
 unset -f gh curl
 rm -rf "$DS_DIR"
 
+# devices/firewall.sh against stub docker and iptables: the rule order, --dry-run changes nothing, and
+# --check says whether a reboot has dropped the rules.
+FW_DIR=$(mktemp -d)
+printf '#!/bin/sh\necho 10.9.0.0/24\n' > "$FW_DIR/docker"
+# shellcheck disable=SC2016 # the stub's $ variables must stay literal
+printf '#!/bin/sh\necho "$*" >> "$FW_LOG"\ncase "$1" in -C) exit "${IPT_C_RC:-0}" ;; -S) [ "${IPT_S_RC:-0}" = 0 ] || exit "$IPT_S_RC"; echo "-N $2"; echo "${IPT_LAST:--A $2 -j DROP}"; exit 0 ;; esac\nexit 0\n' > "$FW_DIR/iptables"
+chmod +x "$FW_DIR/docker" "$FW_DIR/iptables"
+fw() { FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh slotnet 1.2.3.4 "$@"; }
+: > "$FW_DIR/log"
+fw_out=$(fw --dry-run)
+check "firewall: --dry-run runs no iptables" "0" "$(wc -l < "$FW_DIR/log" | tr -d ' ')"
+check "firewall: the slot network only opens the proxy and agent ports" "1" "$(grep -c -- '-d 10.9.0.0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT' <<< "$fw_out")"
+host_drop=$(grep -n -- '-d 1.2.3.4/32 -j DROP' <<< "$fw_out" | cut -d: -f1)
+dns_udp=$(grep -n -- '-p udp --dport 53 -j ACCEPT' <<< "$fw_out" | cut -d: -f1)
+web_open=$(grep -n -- '-p tcp -m multiport --dports 80,443 -j ACCEPT' <<< "$fw_out" | tail -1 | cut -d: -f1)
+check "firewall: DNS is allowed only after the private and host drops" "yes" "$([ "$dns_udp" -gt "$host_drop" ] && [ "$dns_udp" -lt "$web_open" ] && echo yes)"
+check "firewall: slot traffic to the box itself is hooked into INPUT" "1" "$(grep -c -- 'iptables -I INPUT -s 10.9.0.0/24 -j DEVICES-INPUT' <<< "$fw_out")"
+check "firewall: the last rule of the egress chain drops" "1" "$(grep -- 'iptables -A DEVICES-EGRESS' <<< "$fw_out" | tail -1 | grep -c -- '-j DROP')"
+: > "$FW_DIR/log"
+fw_ok=$(fw --check); fw_rc=$?
+check "firewall: --check passes when the rules are in place" "0 OK" "$fw_rc ${fw_ok%%:*}"
+check "firewall: --check changes nothing" "0" "$(grep -c -E '^-(A|I|N|F|D) ' "$FW_DIR/log")"
+fw_gone=$(IPT_C_RC=1 IPT_S_RC=1 fw --check); fw_rc=$?
+check "firewall: --check fails after a reboot dropped the rules" "1" "$fw_rc"
+check "firewall: --check names what is missing" "yes" "$(grep -q 'MISSING: hook in DOCKER-USER' <<< "$fw_gone" && grep -q 'MISSING: chain DEVICES-EGRESS' <<< "$fw_gone" && echo yes)"
+fw_half=$(IPT_LAST='-A DEVICES-EGRESS -p tcp -j ACCEPT' fw --check); fw_rc=$?
+check "firewall: --check fails when a chain does not end in its DROP" "1 yes" "$fw_rc $(grep -q 'MISSING: final DROP in DEVICES-EGRESS' <<< "$fw_half" && echo yes)"
+UNIT=devices/systemd/devices-firewall.service
+check "firewall unit: starts after Docker and needs it" "yes" "$(grep -q '^After=docker.service' "$UNIT" && grep -q '^Requires=docker.service' "$UNIT" && echo yes)"
+# shellcheck disable=SC2016 # ${NETWORK} is literal unit syntax
+check "firewall unit: runs the script with the configured network and ip" "1" "$(grep -c '^ExecStart=/usr/local/sbin/devices-firewall.sh ${NETWORK} ${HOST_IP}$' "$UNIT")"
+check "firewall unit: retries until the network exists" "yes" "$(grep -q '^Restart=on-failure' "$UNIT" && grep -q '^RestartSec=' "$UNIT" && echo yes)"
+check "firewall unit: enabled at boot" "1" "$(grep -c '^WantedBy=multi-user.target' "$UNIT")"
+unset -f fw
+rm -rf "$FW_DIR"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
