@@ -284,8 +284,15 @@ jobs:
           echo "$devices"
           grep -Eq 'emulator-[0-9]+[[:space:]]+device' <<< "$devices" || { echo "no emulator in adb devices"; exit 1; }
 
-          # The screen is real: a screenshot of the device has content.
-          size=$(adb_in sh -c 'adb exec-out screencap -p | wc -c' | tr -d '[:space:]')
+          # The screen is real: a screenshot of the device has content. Right after boot the launcher has
+          # not drawn yet (a blank frame is about 6 KB), so wait for a real one.
+          adb_in adb shell input keyevent KEYCODE_WAKEUP || true
+          size=0
+          for _ in $(seq 1 24); do
+            size=$(adb_in sh -c 'adb exec-out screencap -p | wc -c' | tr -d '[:space:]')
+            [ "${size:-0}" -gt 20000 ] && break
+            sleep 5
+          done
           echo "screenshot: ${size:-0} bytes"
           [ "${size:-0}" -gt 20000 ] || { echo "screenshot is only ${size:-0} bytes"; exit 1; }
           echo "Android booted; screenshot $size bytes."
