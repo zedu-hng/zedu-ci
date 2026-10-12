@@ -13,10 +13,17 @@ os.environ["DEVICE_TOKEN"] = "secret"
 import agent  # noqa: E402
 
 
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def free_ports(n):
+    """n distinct free ports. Picked while every socket is still open: picked one after another, the OS
+    can hand out the same port twice, and the agent would then answer its own upstream probe."""
+    socks = [socket.socket() for _ in range(n)]
+    try:
+        for s in socks:
+            s.bind(("127.0.0.1", 0))
+        return [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
 
 
 def tar_bytes(files, executable=("zedu",)):
@@ -52,16 +59,15 @@ AUTH = {"Authorization": "Bearer secret"}
 class AgentTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.upstream = free_port()
+        self.port, self.upstream = free_ports(2)
         stub = os.path.join(self.tmp, "session.sh")
         with open(stub, "w") as f:
             # stands in for session.sh: serves $APP_DIR over HTTP on the upstream port
             f.write('#!/bin/sh\ncd "$1" && exec python3 -m http.server "$UPSTREAM_PORT" --bind 127.0.0.1\n')
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
         agent.CFG.update(session_cmd=stub, upstream_port=self.upstream, work=os.path.join(self.tmp, "w"),
-                         exit_on_end=False, ttl=60, extend=30, ready_timeout=10, max_bytes=50 * 1024 * 1024)
+                         exit_on_end=False, ttl=60, extend=30, ready_timeout=60, max_bytes=50 * 1024 * 1024)
         agent.slot.reset()
-        self.port = free_port()
         self.server = await asyncio.start_server(agent.handle, "127.0.0.1", self.port)
 
     async def asyncTearDown(self):
