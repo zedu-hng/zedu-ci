@@ -1,0 +1,84 @@
+name: Device session
+
+# Reusable. Turns a reviewer's `/test <platform>` comment on a PR into a session on a device slot: the PR's
+# own build, streamed to a browser (see devices/README.md). Trusted: runs in the review repo with its own
+# token and never checks out PR code. It reads the contributor fork's "PR build" run for the PR's exact head
+# commit (public API), downloads that run's artifact, and uploads it to the slot with DEVICE_TOKEN.
+#
+# Rules, in scripts/lib/device-session.sh:
+# - Only commenters with write access to the repo (the reviewers) can start, extend or stop a session.
+# - The head commit's required statuses (the fork build and the scans) must all be green.
+# - One session per slot. A busy slot's answer names the PR and who holds it.
+# - The link is posted in the workflow's own comment. The viewer needs a GitHub login (zedu-hng reviewers).
+#
+# Caller: .github/workflows/device-session.yml named "Device session", on issue_comment (created), with
+#   concurrency per PR (cancel-in-progress: false) and `secrets: DEVICE_TOKEN: ${{ secrets.DEVICE_TOKEN }}`.
+# Caller permissions: contents: read, issues: write, pull-requests: write, statuses: read.
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Which slot this repo has (desktop or android)
+        type: string
+        default: desktop
+      slot_url:
+        description: The slot's public URL
+        type: string
+        required: true
+      artifact:
+        description: Name of the fork build's artifact the slot runs
+        type: string
+        required: true
+      tarball:
+        description: File inside that artifact the slot unpacks
+        type: string
+        required: true
+      required_statuses:
+        description: Comma-separated commit status contexts that must all be success
+        type: string
+        required: true
+    secrets:
+      DEVICE_TOKEN:
+        description: Bearer token of the slot's agent
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  session:
+    name: Device session
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.issue.number }}
+      WHO: ${{ github.event.comment.user.login }}
+      BODY: ${{ github.event.comment.body }}
+      PLATFORM: ${{ inputs.platform }}
+      SLOT_URL: ${{ inputs.slot_url }}
+      ARTIFACT: ${{ inputs.artifact }}
+      TARBALL: ${{ inputs.tarball }}
+      REQUIRED: ${{ inputs.required_statuses }}
+      DEVICE_TOKEN: ${{ secrets.DEVICE_TOKEN }}
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they are pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Handle the command
+        run: bash .zedu-ci/scripts/device-session.sh
