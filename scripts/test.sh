@@ -311,4 +311,80 @@ check "pr-checks-node: a failed build posts a failed Build row" "Build failure" 
 check "pr-checks-node: SKIP_PUBLISH posts nothing" "fail=0 no-json" "$(tr '\n' ' ' < "$d/env2")$([ -f "$d/pr-checks-results.json" ] || echo no-json)"
 rm -rf "$d"
 
+# device-session: /test comments. Pure helpers first, then ds_main against stubbed gh and the slot.
+source scripts/lib/device-session.sh
+check "device-session: /test desktop starts" "start:desktop" "$(ds_command '/test desktop')"
+check "device-session: trailing words are ignored" "start:desktop" "$(ds_command '/test desktop please')"
+check "device-session: only the first line counts" "stop" "$(ds_command $'/test stop\nthanks')"
+check "device-session: bare /test is help" "help" "$(ds_command '/test')"
+check "device-session: an unknown word is help" "help" "$(ds_command '/test nonsense')"
+check "device-session: extend" "extend" "$(ds_command '/test extend')"
+check "device-session: a normal comment is ignored" "none" "$(ds_command 'looks good to me')"
+check "device-session: /testing is not a command" "none" "$(ds_command '/testing')"
+check "device-session: a leading space is not a command" "none" "$(ds_command ' /test desktop')"
+statuses='[{"context":"Fork build","state":"success"},{"context":"ClamAV","state":"failure"},{"context":"Lazarus","state":"pending"},{"context":"Fork build","state":"failure"}]'
+check "device-session: the newest status per context wins, the rest are listed" "ClamAV: failure|Lazarus: pending|Scan: missing|" "$(ds_missing_statuses "$statuses" 'Fork build, ClamAV,Lazarus,Scan' | tr '\n' '|')"
+check "device-session: nothing is missing when all pass" "" "$(ds_missing_statuses '[{"context":"A","state":"success"}]' 'A')"
+arts='{"artifacts":[{"id":1,"name":"x","expired":false,"created_at":"2026-01-01T00:00:00Z"},{"id":2,"name":"x","expired":false,"created_at":"2026-01-02T00:00:00Z"},{"id":3,"name":"x","expired":true,"created_at":"2026-01-03T00:00:00Z"},{"id":4,"name":"y","expired":false,"created_at":"2026-01-04T00:00:00Z"}]}'
+check "device-session: the newest unexpired artifact of that name" "2" "$(ds_pick_artifact "$arts" x)"
+check "device-session: no artifact of that name" "" "$(ds_pick_artifact "$arts" z)"
+
+DS_DIR=$(mktemp -d)
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('zedu-linux.tar.gz','tarball'); z.close()" "$DS_DIR/a.zip"
+DS_SHA=$(printf 'a%.0s' $(seq 1 40))
+gh() { # canned GitHub answers for owner/repo#7, fork fork/r
+  case "$*" in
+    "api repos/o/r/collaborators/rev/permission --jq .permission") echo "${PERM:-write}" ;;
+    "api repos/o/r/collaborators/"*) echo none ;;
+    "api repos/o/r/pulls/7 --jq "*) printf 'open\t%s\tfork/r\n' "$DS_SHA" ;;
+    "api repos/o/r/commits/$DS_SHA/statuses?per_page=100") echo "${STATUSES:-[]}" ;;
+    "api repos/fork/r/actions/workflows/pr-build.yml/runs?head_sha=$DS_SHA&per_page=10 --jq "*) echo "${RUN:-}" ;;
+    "api repos/fork/r/actions/runs/55/artifacts?per_page=100") echo '{"artifacts":[{"id":9,"name":"desktop-linux","expired":false,"created_at":"2026-01-01T00:00:00Z","size_in_bytes":100}]}' ;;
+    "api repos/fork/r/actions/artifacts/9/zip") cat "$DS_DIR/a.zip" ;;
+    "api repos/o/r/issues/7/comments --paginate --jq "*) echo "" ;;
+    "api repos/o/r/issues/7/comments -f body="*) printf '%s' "${*#*-f body=}" > "$DS_DIR/comment" ;;
+    *) echo "unexpected gh: $*" >&2; return 1 ;;
+  esac
+}
+curl() { # the slot: -X METHOD, -o FILE, URL last
+  local out="" method=GET url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in -o) out=$2; shift ;; -X) method=$2; shift ;; -w | -H | -m | --data-binary) shift ;; -sS) ;; *) url=$1 ;; esac
+    shift
+  done
+  case "$method $url" in
+    "PUT "*) printf '%s' "$SLOT_BODY" > "$out"; printf '%s' "$SLOT_CODE" ;;
+    "DELETE "*) printf '{}' > "$out"; printf '200' ;;
+    *) printf '{}' > "$out"; printf '404' ;;
+  esac
+}
+dsrun() { # comment body, then optional env assignments: prints the comment the workflow posted
+  rm -f "$DS_DIR/comment"
+  (
+    REPO=o/r PR=7 WHO=rev PLATFORM=desktop SLOT_URL=https://slot.test ARTIFACT=desktop-linux
+    TARBALL=zedu-linux.tar.gz REQUIRED="Fork build,ClamAV" DEVICE_TOKEN=t BODY=$1
+    shift
+    for kv in "$@"; do export "${kv?}"; done
+    ds_main > /dev/null 2>&1
+  )
+  if [ -f "$DS_DIR/comment" ]; then cat "$DS_DIR/comment"; else echo "(no comment)"; fi
+}
+ok_statuses='[{"context":"Fork build","state":"success"},{"context":"ClamAV","state":"success"}]'
+ok_run='{"id":55,"conclusion":"success","created_at":"2026-01-01T00:00:00Z","path":".github/workflows/pr-build.yml"}'
+check "device-session: other comments post nothing" "(no comment)" "$(dsrun 'looks good')"
+check "device-session: a non-reviewer is refused" "yes" "$(dsrun '/test desktop' PERM=read | grep -q 'Only reviewers' && echo yes)"
+check "device-session: /test shows the commands" "yes" "$(dsrun '/test' | grep -q '/test extend' && echo yes)"
+check "device-session: a failing scan blocks the session" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" | grep -q . && dsrun '/test desktop' 'STATUSES=[{"context":"Fork build","state":"success"}]' | grep -q -- '- ClamAV: missing' && echo yes)"
+check "device-session: a failed fork build blocks the session" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" 'RUN={"id":55,"conclusion":"failure","created_at":"x","path":".github/workflows/pr-build.yml"}' | grep -q 'has not succeeded' && echo yes)"
+check "device-session: an unavailable platform is said so" "yes" "$(dsrun '/test android' | grep -q 'not available' && echo yes)"
+body='{"path":"/s/tok","expires_in":1800,"holder":{}}'
+check "device-session: a green build starts a session and posts the link" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=201 "SLOT_BODY=$body" | grep -q 'https://slot.test/s/tok' && echo yes)"
+check "device-session: the link comment says who may sign in and for how long" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=201 "SLOT_BODY=$body" | grep -q 'zedu-hng reviewers).* It ends in 30 minutes' && echo yes)"
+busy='{"error":"busy","state":"active","holder":{"pr":"12","sha":"abc1234","who":"someone"},"expires_in":600}'
+check "device-session: a busy slot names the holder" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=409 "SLOT_BODY=$busy" | grep -q 'PR #12.*@someone.*11 minutes' && echo yes)"
+check "device-session: stop ends the session" "yes" "$(dsrun '/test stop' | grep -q 'ended by @rev' && echo yes)"
+check "device-session: the comment carries its marker" "yes" "$(dsrun '/test' | grep -q 'device-session' && echo yes)"
+unset -f gh curl
+rm -rf "$DS_DIR"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }

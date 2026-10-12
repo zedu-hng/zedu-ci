@@ -48,6 +48,7 @@ callers never ship upstream.
 |---|---|---|
 | `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review, optional build and FE preview image (zedu-mobile, zedu-fe) | `pull_request` |
 | `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
+| `device-session.yml` | A reviewer's `/test <platform>` comment starts, extends or stops a device session on the PR's own build (see `devices/README.md`) | `issue_comment` |
 | `pr-checks-go.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, dependency audit, format, go vet, build, tests, PR review (zedu-be) | `pull_request` |
 | `pr-scans.yml` | Semgrep (optional), ClamAV and the obfuscation scan, with per-repo rule packs, paths and excludes | `pull_request` |
 | `obfuscation-sweep.yml` | Weekly full-tree run of the obfuscation scan on a repo's default branch | `schedule`, `workflow_dispatch` (caller) |
