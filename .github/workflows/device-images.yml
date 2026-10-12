@@ -132,6 +132,40 @@ jobs:
           # The process exits after a session so Docker restarts it clean.
           [ "$(docker inspect slot --format '{{.State.Running}}')" = false ]
 
+      # The shipped compose with the login proxy in front, dummy GitHub credentials. A real login cannot
+      # run in CI; this checks the wiring: what is gated, what bypasses the login, the cookie scope.
+      - name: Login proxy gates the viewer
+        env:
+          DEVICE_TOKEN: smoke
+          GH_OAUTH_CLIENT_ID: ci
+          GH_OAUTH_CLIENT_SECRET: ci
+        run: |
+          export OAUTH_COOKIE_SECRET
+          OAUTH_COOKIE_SECRET=$(openssl rand -hex 16)
+          dc="docker compose -f devices/desktop/docker-compose.yml -f devices/desktop/docker-compose.ci.yml"
+          trap '$dc logs --tail 40; $dc down -v > /dev/null 2>&1' EXIT
+          $dc up -d
+          base=http://127.0.0.1:14180
+          for _ in $(seq 1 40); do curl -fsS "$base/healthz" > /dev/null 2>&1 && break; sleep 2; done
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$base/healthz")" = 200 ]
+
+          # /api/ skips the login and the agent checks the bearer token itself.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$base/api/status")" = 401 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer smoke' "$base/api/status")" = 200 ]
+
+          # Everything else goes to GitHub first: the viewer, a session link, the WebSocket.
+          for path in / /vnc.html /s/anything /websockify; do
+            hdr=$(curl -s -D - -o /dev/null "$base$path" | tr -d '\r')
+            echo "$hdr" | head -1 | grep -q ' 302 ' || { echo "$path is not gated:"; echo "$hdr" | head -5; exit 1; }
+            echo "$hdr" | grep -qi '^location: https://github.com/login/oauth/authorize' || { echo "$path does not go to GitHub:"; echo "$hdr"; exit 1; }
+          done
+
+          # The login cookie is host-only: __Host- prefix, Secure, and no Domain attribute.
+          cookies=$(curl -s -D - -o /dev/null "$base/" | tr -d '\r' | grep -i '^set-cookie:')
+          echo "$cookies" | grep -qi '__Host-device-auth' || { echo "no __Host- cookie: $cookies"; exit 1; }
+          if echo "$cookies" | grep -qi 'domain='; then echo "cookie has a Domain attribute: $cookies"; exit 1; fi
+          echo "$cookies" | grep -qi 'secure' || { echo "cookie is not Secure: $cookies"; exit 1; }
+
       - name: Publish
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
