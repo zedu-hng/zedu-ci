@@ -8,14 +8,17 @@ net=${1:?usage: firewall.sh <docker network> <host public ip> [--dry-run]}
 host_ip=${2:?usage: firewall.sh <docker network> <host public ip> [--dry-run]}
 dry=${3:-}
 
+agent_port=${AGENT_PORT:-8080}
 subnet=$(docker network inspect "$net" --format '{{(index .IPAM.Config 0).Subnet}}')
 chain=DEVICES-EGRESS
 run() { if [ "$dry" = --dry-run ]; then echo "+ $*"; else "$@"; fi; }
 
 run iptables -N "$chain" 2>/dev/null || run iptables -F "$chain"
-# Replies to what the viewer and Traefik opened, and traffic inside the slot network itself.
+# Replies to what the viewer and Traefik opened.
 run iptables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-run iptables -A "$chain" -d "$subnet" -j ACCEPT
+# Inside the slot network only the agent port is open (Traefik reaches the agent there). A slot cannot
+# open any other port on another container; the agent port itself needs the token or a viewer cookie.
+run iptables -A "$chain" -d "$subnet" -p tcp --dport "$agent_port" -j ACCEPT
 # Backends: connections addressed to the box public IP on 80 and 443 (they are DNAT-ed to Traefik).
 run iptables -A "$chain" -p tcp -m multiport --dports 80,443 -m conntrack --ctstate DNAT --ctorigdst "$host_ip" -j ACCEPT
 # Everything private, link-local, carrier-grade NAT, and the box itself on any other port.

@@ -92,6 +92,16 @@ jobs:
             exit 1
           fi
 
+          # The interactive stream: a WebSocket upgrade through the agent reaches the VNC server.
+          curl -sS --http1.1 --max-time 4 -i -N -o ws.out \
+            -H "Cookie: $cookie" -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            -H 'Sec-WebSocket-Protocol: binary' http://127.0.0.1:18080/websockify || true
+          if ! head -1 ws.out | grep -q ' 101 ' || ! grep -aq 'RFB 003' ws.out; then
+            echo "No VNC handshake through the WebSocket:"; head -c 600 ws.out | cat -v
+            exit 1
+          fi
+
           # The app runs as the unprivileged user and cannot read the agent's token.
           sleep 2
           [ "$(docker exec slot cat /tmp/app-report | tr '\n' ' ')" = "10001 0 " ]
