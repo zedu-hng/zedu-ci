@@ -15,9 +15,11 @@ services:
       - "8080"
     devices:
       - /dev/kvm:/dev/kvm
+    # /session is a size cap, not a reservation: the emulator refuses to start unless about 7.4 GB looks
+    # free there, but real use is the bytes written (about 2 GB). The container's memory limit applies.
     tmpfs:
       - /tmp:size=512m,mode=1777
-      - /session:exec,nosuid,nodev,size=5g,mode=0755
+      - /session:exec,nosuid,nodev,size=8g,mode=0755
       - /home/device:size=512m,uid=10001,gid=10001,mode=0700
     cap_drop:
       - ALL

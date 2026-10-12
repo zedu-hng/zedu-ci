@@ -28,8 +28,8 @@ RUN curl -fsSL -o /tmp/cmdtools.zip "https://dl.google.com/android/repository/${
  && rm /tmp/cmdtools.zip
 ENV PATH="${PATH}:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
 
-# The emulator and an Android 14 system image, and one baked AVD. The data partition is 2 GB: the emulator
-# wants 1.8 times that free in the session's tmpfs before it creates it. Each session copies the AVD into its
+# The emulator and an Android 14 system image, and one baked AVD. The data partition is 2 GB, which also bounds
+# what an app can write. Each session copies the AVD into its
 # tmpfs and runs that copy, so every session starts from the same clean device.
 ARG SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
 RUN yes | sdkmanager --licenses > /dev/null \
