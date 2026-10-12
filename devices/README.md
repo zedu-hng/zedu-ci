@@ -22,6 +22,21 @@ slot come next.
    app exits, the session ends and the process exits. Docker restarts the container with a clean
    read-only root and empty tmpfs, so nothing carries over.
 
+## Commands
+
+A reviewer (anyone with write access to the repo) comments on the PR. The repo's
+`.github/workflows/device-session.yml` calls zedu-ci's reusable `device-session.yml`:
+
+| Comment         | What                                                                                  |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `/test desktop` | Starts a session on this PR's build. Needs the head commit's required statuses green. |
+| `/test extend`  | Adds 15 minutes, once.                                                                |
+| `/test stop`    | Ends the session.                                                                     |
+| `/test`         | Shows these commands.                                                                 |
+
+The workflow keeps one comment per PR and edits it. A busy slot's answer names the PR and who holds it.
+The repo needs the secret `DEVICE_TOKEN` (the same value as the slot's) and the caller workflow.
+
 ## Files
 
 | Path                         | What                                                                                      |
@@ -77,9 +92,12 @@ The slot runs a PR's build. Containment, in order:
   it cannot read the agent's environment from `/proc`. CI checks this with a stub app.
 - A read-only root, no other capabilities, no new privileges, a pids limit, 2 CPU and 2 GB, low CPU
   shares and a high OOM score so production wins.
-- A dedicated network whose egress is limited by `firewall.sh`.
-- A viewer token that dies with the session. The agent exposes only its own port; the VNC and noVNC
-  ports bind to localhost.
+- A dedicated network whose egress, and traffic to the box itself, is limited by `firewall.sh`. Inside
+  the slot's own network the proxy and agent are not port-filtered on the box (Traefik reached the login
+  proxy under rules that allowed only the agent port), so each relies on its own credentials: a GitHub
+  login for the proxy and the bearer token for the agent.
+- A GitHub login (`oauth2-proxy`, `zedu-hng` reviewers) in front of the viewer, and a viewer token that
+  dies with the session. The VNC and noVNC ports bind to localhost.
 
 What remains is a container or kernel escape, and a PR's build can still use the slot's CPU for its
 30 minutes. If sessions become routine, move the slots to their own server.
