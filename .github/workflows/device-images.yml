@@ -132,6 +132,65 @@ jobs:
           # The process exits after a session so Docker restarts it clean.
           [ "$(docker inspect slot --format '{{.State.Running}}')" = false ]
 
+      # The shipped compose with the login proxy in front, dummy GitHub credentials. A real login cannot
+      # run in CI; this checks the wiring: what is gated, what bypasses the login, the cookie scope.
+      - name: Login proxy gates the viewer
+        env:
+          DEVICE_TOKEN: smoke
+          GH_OAUTH_CLIENT_ID: ci
+          GH_OAUTH_CLIENT_SECRET: ci
+        run: |
+          export OAUTH_COOKIE_SECRET
+          OAUTH_COOKIE_SECRET=$(openssl rand -hex 16)
+          dc="docker compose -f devices/desktop/docker-compose.yml -f devices/desktop/docker-compose.ci.yml"
+          trap '$dc logs --tail 40; $dc down -v > /dev/null 2>&1' EXIT
+          $dc up -d
+          base=http://127.0.0.1:14180
+          for _ in $(seq 1 40); do curl -fsS "$base/healthz" > /dev/null 2>&1 && break; sleep 2; done
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$base/healthz")" = 200 ]
+
+          # /api/ skips the login and the agent checks the bearer token itself.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$base/api/status")" = 401 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer smoke' "$base/api/status")" = 200 ]
+
+          # Everything else goes to GitHub first: the viewer, a session link, the WebSocket.
+          for path in / /vnc.html /s/anything /websockify; do
+            hdr=$(curl -s -D - -o /dev/null "$base$path" | tr -d '\r')
+            echo "$hdr" | head -1 | grep -q ' 302 ' || { echo "$path is not gated:"; echo "$hdr" | head -5; exit 1; }
+            echo "$hdr" | grep -qi '^location: https://github.com/login/oauth/authorize' || { echo "$path does not go to GitHub:"; echo "$hdr"; exit 1; }
+          done
+
+          # The two known skip-auth bypasses: a spoofed X-Forwarded-Uri naming a skipped route
+          # (CVE-2026-40575), and a skipped route in the query string (CVE-2025-54576).
+          expect_login() { # what, then curl arguments
+            local what=$1 hdr
+            shift
+            hdr=$(curl -s -D - -o /dev/null "$@" | tr -d '\r')
+            if ! head -1 <<< "$hdr" | grep -q ' 302 ' || ! grep -qi '^location: https://github.com/login' <<< "$hdr"; then
+              echo "$what skipped the login:"
+              head -4 <<< "$hdr"
+              exit 1
+            fi
+          }
+          expect_login "X-Forwarded-Uri on /s/" -H 'X-Forwarded-Uri: /api/status' "$base/s/anything"
+          expect_login "X-Forwarded-Uri on /vnc.html" -H 'X-Forwarded-Uri: /healthz' "$base/vnc.html"
+          expect_login "X-Forwarded-Path on /vnc.html" -H 'X-Forwarded-Path: /api/status' "$base/vnc.html"
+          expect_login "an /api/ query on /vnc.html" "$base/vnc.html?x=/api/status"
+          expect_login "a /healthz query on /vnc.html" "$base/vnc.html?x=/healthz"
+          expect_login "an /api/ query on /s/" "$base/s/anything?next=/api/"
+
+          # Before login the proxy sets only its CSRF cookie, with the same settings as the session cookie it
+          # sets after a real login (checked by hand on the box). It must be host-only: __Host- prefix,
+          # Secure, HttpOnly, Path=/ and no Domain attribute.
+          cookies=$(curl -s -D - -o /dev/null "$base/" | tr -d '\r' | grep -i '^set-cookie:')
+          [ "$(echo "$cookies" | grep -c .)" = 1 ] || { echo "expected exactly one Set-Cookie before login: $cookies"; exit 1; }
+          csrf=$(echo "$cookies" | grep -i 'set-cookie: __Host-device-auth_csrf=' || true)
+          [ -n "$csrf" ] || { echo "no __Host-device-auth_csrf cookie: $cookies"; exit 1; }
+          for attr in 'secure' 'httponly' 'path=/'; do
+            echo "$csrf" | grep -qi "$attr" || { echo "CSRF cookie lacks $attr: $csrf"; exit 1; }
+          done
+          if echo "$csrf" | grep -qi 'domain='; then echo "CSRF cookie has a Domain attribute: $csrf"; exit 1; fi
+
       - name: Publish
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:

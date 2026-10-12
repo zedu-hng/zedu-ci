@@ -1,0 +1,8 @@
+# CI override for the smoke test: the image built in the job, dummy GitHub credentials, and the proxy
+# published on the runner. The shipped compose is used as is otherwise.
+services:
+  desktop-slot:
+    image: zedu-device-desktop:test
+  auth:
+    ports:
+      - "14180:4180"

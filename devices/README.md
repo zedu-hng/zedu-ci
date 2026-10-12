@@ -14,7 +14,9 @@ slot come next.
    slot: `PUT /api/session?pr=&sha=&who=` with `Authorization: Bearer $DEVICE_TOKEN`.
 2. The agent unpacks it into a tmpfs (`/session`, mounted `exec`), starts the display stack and the app, and answers `201` with a
    viewer path `/s/<token>`, valid until the session ends (a reload works). A busy slot answers `409` with the holder and the time left.
-3. The reviewer opens `https://desktop.preview.groups.zedu.chat/s/<token>`. The link sets a
+3. The reviewer opens `https://desktop.preview.groups.zedu.chat/s/<token>` and signs in with GitHub (an
+   `oauth2-proxy` in front of the slot, limited to the `reviewers` team of zedu-hng; `/api/` and `/healthz`
+   skip the login because the agent checks the bearer token). Then the viewer needs the link's token too. The link sets a
    `__Host-device` cookie (host-only, so a sibling preview page cannot shadow it) and redirects to noVNC.
 4. After `TTL_SECONDS` (30 minutes, one `/api/extend` of 15 more), on `DELETE /api/session`, or when the
    app exits, the session ends and the process exits. Docker restarts the container with a clean
@@ -37,15 +39,23 @@ container (production flags, stub app, viewer link, cookie, busy slot) and publi
 
 ## Box setup (once)
 
-1. In Coolify, add a destination (Docker network) named `devices` on the server. Slots must be on this
-   network only, and Traefik joins it so it can route to them.
-2. Apply the egress rules: `sudo devices/firewall.sh devices <box public ip> --dry-run`, read the
-   output, then run it without `--dry-run`. Persist them with `iptables-persistent`. Slots may reach
-   the internet (web ports and DNS) and the box's own 80 and 443 (team backends sit behind Traefik), and nothing else.
-3. Create the Coolify application from `desktop/docker-compose.yml` on the `devices` destination. Set
-   the domain `https://desktop.preview.groups.zedu.chat` (port 8080) and the secret `DEVICE_TOKEN` (a
-   long random string, also stored as `DEVICE_TOKEN` in the zedu-hng repos that call the slot).
-   `*.groups.zedu.chat` already resolves to the box and `*.preview.groups.zedu.chat` has a wildcard cert.
+1. Create the GitHub OAuth app (org owner): zedu-hng → Settings → Developer settings → OAuth Apps. The
+   callback URL is `https://desktop.preview.groups.zedu.chat/oauth2/callback`. A GitHub OAuth app has one
+   callback host, so each slot (desktop, later android) gets its own app. Approve it for the org so
+   team membership is readable. Keep the client ID and secret out of git and chat.
+2. Create the Coolify service from `desktop/docker-compose.yml`. Coolify gives it its own Docker
+   network, named after the service UUID. Set the domain `https://desktop.preview.groups.zedu.chat` on
+   the **`auth`** service (port 4180), not on the slot, and set the secrets `DEVICE_TOKEN` (a long random
+   string, also stored as `DEVICE_TOKEN` in the zedu-hng repos that call the slot), `GH_OAUTH_CLIENT_ID`,
+   `GH_OAUTH_CLIENT_SECRET` and `OAUTH_COOKIE_SECRET` (`openssl rand -hex 16`). `GH_OAUTH_TEAM` defaults
+   to `reviewers`. `*.groups.zedu.chat` already resolves to the box and `*.preview.groups.zedu.chat` has
+   a wildcard cert.
+3. Apply the egress rules with the service's network name:
+   `sudo devices/firewall.sh <service network> <box public ip> --dry-run`, read the output, then run it
+   without `--dry-run`. Persist them with `netfilter-persistent save`; re-running the script after a
+   reboot rebuilds them. Slots may reach the internet (web ports and DNS) and the box's own 80 and 443
+   (team backends sit behind Traefik), and the login proxy and agent ports inside their own network.
+   Nothing else.
 4. First run by hand (replace `<artifact>` with a downloaded `desktop-linux` bundle):
 
    ```bash
@@ -54,7 +64,7 @@ container (production flags, stub app, viewer link, cookie, busy slot) and publi
      'https://desktop.preview.groups.zedu.chat/api/session?pr=0&sha=manual&who=you'
    ```
 
-   Open the returned path, then check these four things: the app renders under software GL, sign-in
+   Open the returned path (it asks for the GitHub login first), then check these four things: the app renders under software GL, sign-in
    works (the keyring), the stream is responsive, and `DELETE /api/session` frees the slot.
 
 ## Limits and risks
