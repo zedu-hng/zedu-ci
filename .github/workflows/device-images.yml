@@ -179,11 +179,16 @@ jobs:
           expect_login "a /healthz query on /vnc.html" "$base/vnc.html?x=/healthz"
           expect_login "an /api/ query on /s/" "$base/s/anything?next=/api/"
 
-          # The login cookie is host-only: __Host- prefix, Secure, and no Domain attribute.
+          # Before login the proxy sets only its CSRF cookie, with the same settings as the session cookie it
+          # sets after a real login (checked by hand on the box). It must be host-only: __Host- prefix,
+          # Secure, HttpOnly, Path=/ and no Domain attribute.
           cookies=$(curl -s -D - -o /dev/null "$base/" | tr -d '\r' | grep -i '^set-cookie:')
-          echo "$cookies" | grep -qi '__Host-device-auth' || { echo "no __Host- cookie: $cookies"; exit 1; }
-          if echo "$cookies" | grep -qi 'domain='; then echo "cookie has a Domain attribute: $cookies"; exit 1; fi
-          echo "$cookies" | grep -qi 'secure' || { echo "cookie is not Secure: $cookies"; exit 1; }
+          csrf=$(echo "$cookies" | grep -i 'set-cookie: __Host-device-auth_csrf=' || true)
+          [ -n "$csrf" ] || { echo "no __Host-device-auth_csrf cookie: $cookies"; exit 1; }
+          for attr in 'secure' 'httponly' 'path=/'; do
+            echo "$csrf" | grep -qi "$attr" || { echo "CSRF cookie lacks $attr: $csrf"; exit 1; }
+          done
+          if echo "$csrf" | grep -qi 'domain='; then echo "CSRF cookie has a Domain attribute: $csrf"; exit 1; fi
 
       - name: Publish
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
