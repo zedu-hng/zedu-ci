@@ -1,0 +1,27 @@
+# Shared libraries zedu-desktop's Linux bundle links against (readelf -d of the release bundle).
+# The image smoke test checks every one is present. Update it when the app's plugins change.
+libatk-1.0.so.0
+libayatana-appindicator3.so.1
+libayatana-ido3-0.4.so.0
+libayatana-indicator3.so.7
+libcairo-gobject.so.2
+libcairo.so.2
+libdbusmenu-glib.so.4
+libepoxy.so.0
+libfontconfig.so.1
+libgdk-3.so.0
+libgdk_pixbuf-2.0.so.0
+libgio-2.0.so.0
+libglib-2.0.so.0
+libgobject-2.0.so.0
+libgstapp-1.0.so.0
+libgstbase-1.0.so.0
+libgstreamer-1.0.so.0
+libgtk-3.so.0
+libharfbuzz.so.0
+libnotify.so.4
+libpango-1.0.so.0
+libpangocairo-1.0.so.0
+libsecret-1.so.0
+libstdc++.so.6
+libz.so.1
