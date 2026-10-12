@@ -25,7 +25,7 @@ RUN chmod 755 /opt/agent/agent.py /opt/agent/session.sh
 # KILL) and starts each session's app as the unprivileged `device` user. The app cannot read the
 # agent's environment (DEVICE_TOKEN) from /proc because it is a different user.
 # The app is unpacked into /session, a tmpfs mounted with exec (Docker's --tmpfs is noexec by default).
-ENV WORK_DIR=/session
+ENV WORK_DIR=/session/run
 WORKDIR /home/device
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

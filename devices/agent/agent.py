@@ -283,7 +283,7 @@ async def api(method, path, query, headers, reader, writer):
 
 async def start_session(query, headers, reader, writer):
     shutil.rmtree(CFG["work"], ignore_errors=True)
-    os.makedirs(CFG["work"], mode=0o700)
+    os.makedirs(CFG["work"], mode=0o700, exist_ok=True)
     archive = os.path.join(CFG["work"], "artifact.tar.gz")
     appdir = os.path.join(CFG["work"], "app")
     os.makedirs(appdir)
