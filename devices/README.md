@@ -122,6 +122,10 @@ Setup differs from desktop in four things:
 4. The firewall covers both slots: set `NETWORK` in `/etc/default/devices-firewall` to both networks,
    space separated, and restart `devices-firewall.service`.
 
+The device is 720x1280 at 320 dpi by default, on a virtual display sized to fit it, so noVNC scales the whole phone to the
+viewer's height. `DEVICE_WIDTH`, `DEVICE_HEIGHT` and `DEVICE_DENSITY` on the service change it; a bigger device costs
+software-rendering CPU (try 1080x1920 at 420 and watch the load).
+
 CI boots the emulator for real on a runner with KVM (a stub APK, so only the boot, the display and the
 agent are checked). Installing and opening a real app is checked by hand on the box.
 
