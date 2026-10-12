@@ -4,7 +4,7 @@
 #   KVM_GID               numeric group id of /dev/kvm on the box (`getent group kvm`); the emulator needs it
 #   GH_OAUTH_CLIENT_ID, GH_OAUTH_CLIENT_SECRET   a zedu-hng GitHub OAuth app whose callback is
 #                         https://android.preview.groups.zedu.chat/oauth2/callback (one callback host per app)
-#   OAUTH_COOKIE_SECRET   32 random bytes, base64 or hex (oauth2-proxy's session cookie)
+#   OAUTH_COOKIE_SECRET   exactly 16, 24 or 32 characters (oauth2-proxy's session cookie): `openssl rand -hex 16`
 # See devices/README.md. Only `auth` is reachable from outside; the agent is behind it.
 services:
   android-slot:

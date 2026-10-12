@@ -41,9 +41,10 @@ run iptables -N "$chain" 2>/dev/null || run iptables -F "$chain"
 run iptables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 # Inside the slot network only the login proxy and agent ports are open: Traefik reaches the proxy, the
 # proxy reaches the agent. A slot cannot open any other port on another container; the proxy needs a
-# GitHub login and the agent needs the token or a viewer cookie.
+# GitHub login and the agent needs the token or a viewer cookie. Source and destination must be the same
+# network: with several slots, one slot's app must not reach another slot's proxy or agent.
 for subnet in "${subnets[@]}"; do
-  run iptables -A "$chain" -d "$subnet" -p tcp -m multiport --dports "$slot_ports" -j ACCEPT
+  run iptables -A "$chain" -s "$subnet" -d "$subnet" -p tcp -m multiport --dports "$slot_ports" -j ACCEPT
 done
 # Backends: connections addressed to the box public IP on 80 and 443 (they are DNAT-ed to Traefik).
 run iptables -A "$chain" -p tcp -m multiport --dports 80,443 -m conntrack --ctstate DNAT --ctorigdst "$host_ip" -j ACCEPT

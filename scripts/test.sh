@@ -409,7 +409,7 @@ fw() { FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh slotne
 : > "$FW_DIR/log"
 fw_out=$(fw --dry-run)
 check "firewall: --dry-run runs no iptables" "0" "$(wc -l < "$FW_DIR/log" | tr -d ' ')"
-check "firewall: the slot network only opens the proxy and agent ports" "1" "$(grep -c -- '-d 10.9.0.0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT' <<< "$fw_out")"
+check "firewall: the slot network only opens the proxy and agent ports" "1" "$(grep -c -- '-s 10.9.0.0/24 -d 10.9.0.0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT' <<< "$fw_out")"
 host_drop=$(grep -n -- '-d 1.2.3.4/32 -j DROP' <<< "$fw_out" | cut -d: -f1)
 dns_udp=$(grep -n -- '-p udp --dport 53 -j ACCEPT' <<< "$fw_out" | cut -d: -f1)
 web_open=$(grep -n -- '-p tcp -m multiport --dports 80,443 -j ACCEPT' <<< "$fw_out" | tail -1 | cut -d: -f1)
@@ -418,8 +418,9 @@ check "firewall: slot traffic to the box itself is hooked into INPUT" "1" "$(gre
 check "firewall: the last rule of the egress chain drops" "1" "$(grep -- 'iptables -A DEVICES-EGRESS' <<< "$fw_out" | tail -1 | grep -c -- '-j DROP')"
 fw_two=$(FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh "slotnet othernet" 1.2.3.4 --dry-run)
 check "firewall: two networks share one chain, built once" "1" "$(grep -c -- 'iptables -N DEVICES-EGRESS' <<< "$fw_two")"
-check "firewall: each network gets its own slot-port rule and hooks" "6" "$(grep -c -E -- '(-d 10.9.[01].0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT|-I DOCKER-USER -s 10.9.[01].0/24|-I INPUT -s 10.9.[01].0/24)' <<< "$fw_two")"
+check "firewall: each network gets its own slot-port rule and hooks" "6" "$(grep -c -E -- '(-s 10.9.[01].0/24 -d 10.9.[01].0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT|-I DOCKER-USER -s 10.9.[01].0/24|-I INPUT -s 10.9.[01].0/24)' <<< "$fw_two")"
 fw_two_comma=$(FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh "slotnet,othernet" 1.2.3.4 --dry-run)
+check "firewall: one slot cannot reach another slot's proxy or agent" "0" "$(grep -c -E -- '-s 10.9.0.0/24 -d 10.9.1.0/24|-s 10.9.1.0/24 -d 10.9.0.0/24' <<< "$fw_two")"
 check "firewall: networks can be comma separated" "2" "$(grep -c -- '-I DOCKER-USER -s' <<< "$fw_two_comma")"
 fw_one_gone=$(IPT_C_RC=1 FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh "slotnet othernet" 1.2.3.4 --check); fw_rc=$?
 check "firewall: --check names the hook of each network that is missing" "1 2" "$fw_rc $(grep -c 'MISSING: hook in DOCKER-USER' <<< "$fw_one_gone")"

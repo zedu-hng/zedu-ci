@@ -251,12 +251,12 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm || echo "::warning::This runner has no /dev/kvm; the emulator boot is skipped."
+          ls -l /dev/kvm
 
       - name: Emulator boots under a session
         run: |
           trap 'docker logs slot 2>&1 | tail -40; docker exec slot sh -c "tail -n 40 /tmp/emulator.log" 2>&1; docker rm -f slot > /dev/null 2>&1' EXIT
-          [ -e /dev/kvm ] || { echo "::warning::No /dev/kvm here; skipping the emulator boot."; exit 0; }
+          [ -e /dev/kvm ] || { echo "::error::No /dev/kvm on this runner, so the emulator cannot be boot-tested. Not publishing an untested image."; exit 1; }
           adb_in() { docker exec -u 10001 -e HOME=/home/device slot "$@"; }
           docker run -d --name slot -p 18081:8080 --memory 7g --cpus 3 \
             --read-only --tmpfs /tmp:size=512m,mode=1777 --tmpfs /session:exec,nosuid,nodev,size=8g,mode=0755 \
@@ -280,11 +280,14 @@ jobs:
             sleep 5
           done
           [ "${booted:-}" = 1 ] || { echo "Android did not boot within 10 minutes"; exit 1; }
-          adb_in adb devices | grep -q 'emulator-5554[[:space:]]*device'
+          devices=$(adb_in adb devices)
+          echo "$devices"
+          grep -Eq 'emulator-[0-9]+[[:space:]]+device' <<< "$devices" || { echo "no emulator in adb devices"; exit 1; }
 
           # The screen is real: a screenshot of the device has content.
-          size=$(adb_in sh -c 'adb exec-out screencap -p | wc -c')
-          [ "$size" -gt 20000 ] || { echo "screenshot is only $size bytes"; exit 1; }
+          size=$(adb_in sh -c 'adb exec-out screencap -p | wc -c' | tr -d '[:space:]')
+          echo "screenshot: ${size:-0} bytes"
+          [ "${size:-0}" -gt 20000 ] || { echo "screenshot is only ${size:-0} bytes"; exit 1; }
           echo "Android booted; screenshot $size bytes."
 
       - name: Publish
