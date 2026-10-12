@@ -132,7 +132,7 @@ ds_main() {
     {
       echo "No session for \`${sha:0:7}\` yet. These must pass first:"
       echo
-      sed 's/^/- /' <<< "$missing"
+      while IFS= read -r line; do echo "- $line"; done <<< "$missing"
     } | ds_comment
     return 0
   fi
