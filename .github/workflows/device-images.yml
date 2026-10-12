@@ -183,6 +183,7 @@ jobs:
           # sets after a real login (checked by hand on the box). It must be host-only: __Host- prefix,
           # Secure, HttpOnly, Path=/ and no Domain attribute.
           cookies=$(curl -s -D - -o /dev/null "$base/" | tr -d '\r' | grep -i '^set-cookie:')
+          [ "$(echo "$cookies" | grep -c .)" = 1 ] || { echo "expected exactly one Set-Cookie before login: $cookies"; exit 1; }
           csrf=$(echo "$cookies" | grep -i 'set-cookie: __Host-device-auth_csrf=' || true)
           [ -n "$csrf" ] || { echo "no __Host-device-auth_csrf cookie: $cookies"; exit 1; }
           for attr in 'secure' 'httponly' 'path=/'; do
