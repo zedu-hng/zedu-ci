@@ -20,6 +20,9 @@ if [ "$dry" = --check ]; then
   missing=0
   iptables -S "$chain" > /dev/null 2>&1 || { echo "MISSING: chain $chain"; missing=1; }
   iptables -S "$input" > /dev/null 2>&1 || { echo "MISSING: chain $input"; missing=1; }
+  # A chain rebuilt halfway (or flushed) exists but does not end in its DROP, so it lets everything through.
+  [ "$(iptables -S "$chain" 2> /dev/null | tail -n 1)" = "-A $chain -j DROP" ] || { echo "MISSING: final DROP in $chain"; missing=1; }
+  [ "$(iptables -S "$input" 2> /dev/null | tail -n 1)" = "-A $input -j DROP" ] || { echo "MISSING: final DROP in $input"; missing=1; }
   iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2> /dev/null || { echo "MISSING: hook in DOCKER-USER for $subnet"; missing=1; }
   iptables -C INPUT -s "$subnet" -j "$input" 2> /dev/null || { echo "MISSING: hook in INPUT for $subnet"; missing=1; }
   [ "$missing" = 0 ] && echo "OK: the rules for $net ($subnet) are in place."

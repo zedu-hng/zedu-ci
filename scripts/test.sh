@@ -395,7 +395,7 @@ rm -rf "$DS_DIR"
 FW_DIR=$(mktemp -d)
 printf '#!/bin/sh\necho 10.9.0.0/24\n' > "$FW_DIR/docker"
 # shellcheck disable=SC2016 # the stub's $ variables must stay literal
-printf '#!/bin/sh\necho "$*" >> "$FW_LOG"\ncase "$1" in -C) exit "${IPT_C_RC:-0}" ;; -S) exit "${IPT_S_RC:-0}" ;; esac\nexit 0\n' > "$FW_DIR/iptables"
+printf '#!/bin/sh\necho "$*" >> "$FW_LOG"\ncase "$1" in -C) exit "${IPT_C_RC:-0}" ;; -S) [ "${IPT_S_RC:-0}" = 0 ] || exit "$IPT_S_RC"; echo "-N $2"; echo "${IPT_LAST:--A $2 -j DROP}"; exit 0 ;; esac\nexit 0\n' > "$FW_DIR/iptables"
 chmod +x "$FW_DIR/docker" "$FW_DIR/iptables"
 fw() { FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh slotnet 1.2.3.4 "$@"; }
 : > "$FW_DIR/log"
@@ -415,6 +415,8 @@ check "firewall: --check changes nothing" "0" "$(grep -c -E '^-(A|I|N|F|D) ' "$F
 fw_gone=$(IPT_C_RC=1 IPT_S_RC=1 fw --check); fw_rc=$?
 check "firewall: --check fails after a reboot dropped the rules" "1" "$fw_rc"
 check "firewall: --check names what is missing" "yes" "$(grep -q 'MISSING: hook in DOCKER-USER' <<< "$fw_gone" && grep -q 'MISSING: chain DEVICES-EGRESS' <<< "$fw_gone" && echo yes)"
+fw_half=$(IPT_LAST='-A DEVICES-EGRESS -p tcp -j ACCEPT' fw --check); fw_rc=$?
+check "firewall: --check fails when a chain does not end in its DROP" "1 yes" "$fw_rc $(grep -q 'MISSING: final DROP in DEVICES-EGRESS' <<< "$fw_half" && echo yes)"
 UNIT=devices/systemd/devices-firewall.service
 check "firewall unit: starts after Docker and needs it" "yes" "$(grep -q '^After=docker.service' "$UNIT" && grep -q '^Requires=docker.service' "$UNIT" && echo yes)"
 # shellcheck disable=SC2016 # ${NETWORK} is literal unit syntax
