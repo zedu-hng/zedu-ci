@@ -28,8 +28,8 @@ RUN curl -fsSL -o /tmp/cmdtools.zip "https://dl.google.com/android/repository/${
  && rm /tmp/cmdtools.zip
 ENV PATH="${PATH}:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
 
-# The emulator and an Android 14 system image, and one baked AVD. The emulator runs it read-only
-# (-read-only), so every session starts from the same clean image.
+# The emulator and an Android 14 system image, and one baked AVD. Each session copies the AVD into its
+# tmpfs and runs that copy, so every session starts from the same clean device.
 ARG SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
 RUN yes | sdkmanager --licenses > /dev/null \
  && sdkmanager --install "platform-tools" "emulator" "${SYSTEM_IMAGE}" > /dev/null \

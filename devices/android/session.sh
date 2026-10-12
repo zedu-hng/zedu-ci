@@ -10,11 +10,19 @@ upstream=${UPSTREAM_PORT:-6080}
 
 export DISPLAY=:1 HOME=${HOME:-/home/device} XDG_RUNTIME_DIR=/tmp/xdg
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-# The emulator's writable overlays (it runs the AVD read-only) go in the session's exec tmpfs.
+# The emulator's temporary files go in the session's exec tmpfs.
 export TMPDIR
 TMPDIR="$(dirname "$app_dir")/tmp"
 mkdir -p "$TMPDIR"
 export LIBGL_ALWAYS_SOFTWARE=1 LP_NUM_THREADS=3 QT_QPA_PLATFORM=xcb
+
+# The emulator writes lock and version files next to its AVD (even read-only), and the image's root is
+# read-only. So each session starts from a fresh copy of the baked AVD in the session's tmpfs.
+avd_home="$(dirname "$app_dir")/avd"
+mkdir -p "$avd_home"
+cp -r /opt/android-avd/slot.avd "$avd_home/"
+sed -e "s#^path=.*#path=$avd_home/slot.avd#" -e "s#^path.rel=.*#path.rel=avd/slot.avd#" /opt/android-avd/slot.ini > "$avd_home/slot.ini"
+export ANDROID_AVD_HOME="$avd_home"
 
 cleanup() { jobs -p | xargs -r kill 2>/dev/null; adb kill-server 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT
@@ -29,7 +37,7 @@ for _ in $(seq 1 40); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.25; done
 openbox > /tmp/openbox.log 2>&1 &
 websockify --web /usr/share/novnc "127.0.0.1:$upstream" localhost:5901 > /tmp/websockify.log 2>&1 &
 
-emulator -avd slot -read-only -no-snapshot -no-audio -no-boot-anim -no-metrics \
+emulator -avd slot -no-snapshot -no-audio -no-boot-anim -no-metrics \
   -gpu swiftshader_indirect -accel on -memory 3072 -cores 3 -scale "${EMULATOR_SCALE:-0.7}" \
   > /tmp/emulator.log 2>&1 &
 emulator_pid=$!

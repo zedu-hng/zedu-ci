@@ -104,7 +104,7 @@ container (production flags, stub app, viewer link, cookie, busy slot) and publi
 The same agent and login in front of an x86_64 Android 14 emulator (`devices/android/`). The emulator
 needs KVM, so the slot gets `/dev/kvm` and its numeric group id. A reviewer comments `/test android`
 on a mobile PR; the workflow downloads the fork's `android-apk` artifact, wraps the APK as `app.apk`,
-and the slot boots a fresh emulator from a read-only image, installs the APK and opens it. The first
+and the slot boots a fresh emulator from a copy of the baked device, installs the APK and opens it. The first
 boot of a session takes a minute or two. There is no Google Play, and sign-in with Google, push and
 calls do not work in review builds (their keys are unset).
 
@@ -112,7 +112,7 @@ calls do not work in review builds (their keys are unset).
 | ---------------------------- | ------------------------------------------------------------------------------- |
 | `android/Dockerfile`         | Ubuntu 24.04, the SDK (pinned by checksum), the emulator, one baked AVD.        |
 | `android/session.sh`         | Display stack, emulator, then install and open the APK once Android has booted. |
-| `android/docker-compose.yml` | The slot (6 GB, 3 CPU, `/dev/kvm`) and the same login proxy as desktop.         |
+| `android/docker-compose.yml` | The slot (7 GB, 3 CPU, `/dev/kvm`) and the same login proxy as desktop.         |
 
 Setup differs from desktop in four things:
 

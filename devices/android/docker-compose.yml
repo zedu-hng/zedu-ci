@@ -17,7 +17,7 @@ services:
       - /dev/kvm:/dev/kvm
     tmpfs:
       - /tmp:size=512m,mode=1777
-      - /session:exec,nosuid,nodev,size=3g,mode=0755
+      - /session:exec,nosuid,nodev,size=4g,mode=0755
       - /home/device:size=512m,uid=10001,gid=10001,mode=0700
     cap_drop:
       - ALL
@@ -29,7 +29,7 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 1024
-    mem_limit: 6g
+    mem_limit: 7g
     cpus: 3
     cpu_shares: 128
     oom_score_adj: 500
