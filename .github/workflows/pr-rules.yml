@@ -308,21 +308,65 @@ jobs:
             else
               norm() { tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' '; }
               body_norm=$(printf '%s' "$BODY" | norm)
+              ticked() { printf '%s\n' "$body_norm" | grep -qF "[x] $1"; }
               missing=""; n=0
-              while IFS= read -r line; do
-                label=$(printf '%s' "$line" | sed -E 's/^- \[[ xX]\] //')
-                label_norm=$(printf '%s' "$label" | norm)
-                [ -n "$label_norm" ] || continue
-                if ! printf '%s\n' "$body_norm" | grep -qF "[x] $label_norm"; then
-                  missing="${missing}  - ${label}"$'\n'; n=$((n + 1))
+              # A run of checkbox lines wrapped in <!-- choice --> ... <!-- /choice --> holds
+              # alternatives (the change types, the mutually exclusive Yes/No answers): exactly one
+              # answer is required, not all. The tick must sit inside that same group's region of
+              # the body, so a label repeated in another group can't count here. Every checkbox
+              # outside a group is mandatory.
+              in_choice=false; choice_labels=""; group_idx=0
+              choice_check() {
+                [ "$in_choice" = true ] || return 0
+                group_idx=$((group_idx + 1))
+                local region scope="" hit=false label_norm
+                region=$(awk -v k="$group_idx" '
+                  index($0, "<!-- choice -->") { n++; if (n == k) grab = 1; next }
+                  index($0, "<!-- /choice -->") { if (grab) exit }
+                  grab { print }' <<< "$BODY")
+                if [ -n "$region" ]; then scope=$(printf '%s\n' "$region" | norm); fi
+                while IFS= read -r label; do
+                  [ -n "$label" ] || continue
+                  label_norm=$(printf '%s' "$label" | norm)
+                  [ -n "$label_norm" ] || continue
+                  if [ -n "$scope" ]; then
+                    if printf '%s\n' "$scope" | grep -qF "[x] $label_norm"; then hit=true; break; fi
+                  elif ticked "$label_norm"; then
+                    hit=true; break
+                  fi
+                done <<< "$choice_labels"
+                if [ "$hit" = false ]; then
+                  missing="${missing}  - one of: ${choice_labels//$'\n'/; }"$'\n'; n=$((n + 1))
                 fi
-              done < <(printf '%s\n' "$template" | grep -E '^- \[ \] ')
+                in_choice=false; choice_labels=""
+              }
+              while IFS= read -r line; do
+                case "$line" in
+                  *'<!-- choice -->'*) in_choice=true; choice_labels=""; continue ;;
+                  *'<!-- /choice -->'*) choice_check; continue ;;
+                esac
+                case "$line" in
+                  '- [ ] '*) ;;
+                  *) continue ;;
+                esac
+                label=$(printf '%s' "$line" | sed -E 's/^- \[[ xX]\] //')
+                if [ "$in_choice" = true ]; then
+                  choice_labels="${choice_labels}${label}"$'\n'
+                else
+                  label_norm=$(printf '%s' "$label" | norm)
+                  [ -n "$label_norm" ] || continue
+                  if ! ticked "$label_norm"; then
+                    missing="${missing}  - ${label}"$'\n'; n=$((n + 1))
+                  fi
+                fi
+              done < <(printf '%s\n' "$template")
+              choice_check
               if [ -n "$missing" ]; then
-                echo "::error::Tick every checkbox in the PR template ($TEMPLATE)."
+                echo "::error::Tick every mandatory checkbox and one of each choice group in the PR template ($TEMPLATE)."
                 echo "Unticked:"; printf '%s' "$missing"
-                report "PR template" failure "$n template checkbox(es) unticked; tick every one"
+                report "PR template" failure "$n template checkbox(es)/group(s) unanswered"
               else
-                report "PR template" success "OK: all template checkboxes ticked"
+                report "PR template" success "OK: template answered"
               fi
             fi
           fi
