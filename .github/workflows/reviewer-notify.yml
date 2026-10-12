@@ -2,7 +2,7 @@ name: Reviewer notify
 
 # Reusable. Maintains the ready-for-review queue for contributor PRs.
 # - A PR that is lead-approved and its Fork build passes is marked ready-for-review and the
-#   reviewers team is mentioned once, but only while its team has fewer than CAP unclaimed PRs
+#   reviewers team is mentioned once, but only while its team has fewer than `cap` (default 5) unclaimed PRs
 #   waiting. Beyond that it is marked queued.
 # - A queued PR is promoted oldest-first as slots free (a PR is claimed, merged or closed).
 # - A claim is the `claimed` label (reviewer-claim adds it), not an assignee: every PR is assigned
@@ -36,6 +36,12 @@ on:
           whose build runs in the contributor's fork. FE passes "Build", the result of its own PR checks.
         type: string
         default: Fork build
+      cap:
+        description: >-
+          How many unclaimed ready-for-review PRs one team can have at once. The rest are queued and
+          promoted oldest-first as a PR is claimed, merged or closed.
+        type: string
+        default: "5"
 
 permissions:
   contents: read
@@ -53,7 +59,7 @@ env:
   QUEUED_LABEL: queued
   CLAIMED_LABEL: claimed
   REVIEWERS: zedu-hng/reviewers
-  CAP: "3"
+  CAP: ${{ inputs.cap }}
 
 jobs:
   notify:
@@ -117,6 +123,7 @@ jobs:
 
       - name: Maintain queue
         run: |
+          [[ "$CAP" =~ ^[0-9]+$ ]] || { echo "::error::cap must be a whole number, got '$CAP'."; exit 1; }
           declare -A waiting
           while IFS='|' read -r _ team _ _ labels _ _; do
             case ",$labels," in
