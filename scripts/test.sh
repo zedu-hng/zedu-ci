@@ -334,6 +334,7 @@ check "device-session: no artifact of that name" "" "$(ds_pick_artifact "$arts" 
 
 DS_DIR=$(mktemp -d)
 python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('zedu-linux.tar.gz','tarball'); z.close()" "$DS_DIR/a.zip"
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('app-release.apk','apk-bytes'); z.close()" "$DS_DIR/apk.zip"
 DS_SHA=$(printf 'a%.0s' $(seq 1 40))
 gh() { # canned GitHub answers for owner/repo#7, fork fork/r
   case "$*" in
@@ -342,8 +343,8 @@ gh() { # canned GitHub answers for owner/repo#7, fork fork/r
     "api repos/o/r/pulls/7 --jq "*) printf 'open\t%s\tfork/r\n' "$DS_SHA" ;;
     "api repos/o/r/commits/$DS_SHA/statuses?per_page=100") echo "${STATUSES:-[]}" ;;
     "api repos/fork/r/actions/workflows/pr-build.yml/runs?head_sha=$DS_SHA&per_page=10 --jq "*) echo "${RUN:-}" ;;
-    "api repos/fork/r/actions/runs/55/artifacts?per_page=100") echo '{"artifacts":[{"id":9,"name":"desktop-linux","expired":false,"created_at":"2026-01-01T00:00:00Z","size_in_bytes":100}]}' ;;
-    "api repos/fork/r/actions/artifacts/9/zip") cat "$DS_DIR/a.zip" ;;
+    "api repos/fork/r/actions/runs/55/artifacts?per_page=100") echo "{\"artifacts\":[{\"id\":9,\"name\":\"${ARTIFACT_NAME:-desktop-linux}\",\"expired\":false,\"created_at\":\"2026-01-01T00:00:00Z\",\"size_in_bytes\":100}]}" ;;
+    "api repos/fork/r/actions/artifacts/9/zip") cat "$DS_DIR/${ZIP_FILE:-a.zip}" ;;
     "api repos/o/r/issues/7/comments --paginate --jq "*) echo "" ;;
     "api repos/o/r/issues/7/comments -f body="*) printf '%s' "${*#*-f body=}" > "$DS_DIR/comment" ;;
     *) echo "unexpected gh: $*" >&2; return 1 ;;
@@ -352,7 +353,7 @@ gh() { # canned GitHub answers for owner/repo#7, fork fork/r
 curl() { # the slot: -X METHOD, -o FILE, URL last
   local out="" method=GET url=""
   while [ $# -gt 0 ]; do
-    case "$1" in -o) out=$2; shift ;; -X) method=$2; shift ;; -w | -H | -m | --data-binary) shift ;; -sS) ;; *) url=$1 ;; esac
+    case "$1" in -o) out=$2; shift ;; -X) method=$2; shift ;; --data-binary) cp "${2#@}" "$DS_DIR/uploaded"; shift ;; -w | -H | -m) shift ;; -sS) ;; *) url=$1 ;; esac
     shift
   done
   case "$method $url" in
@@ -385,6 +386,12 @@ check "device-session: a green build starts a session and posts the link" "yes" 
 check "device-session: the link comment says who may sign in and for how long" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=201 "SLOT_BODY=$body" | grep -q 'zedu-hng reviewers).* It ends in 30 minutes' && echo yes)"
 busy='{"error":"busy","state":"active","holder":{"pr":"12","sha":"abc1234","who":"someone"},"expires_in":600}'
 check "device-session: a busy slot names the holder" "yes" "$(dsrun '/test desktop' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=409 "SLOT_BODY=$busy" | grep -q 'PR #12.*@someone.*11 minutes' && echo yes)"
+rm -f "$DS_DIR/uploaded"
+dsrun '/test android' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=201 "SLOT_BODY=$body" PLATFORM=android ARTIFACT=android-apk ARTIFACT_NAME=android-apk ZIP_FILE=apk.zip TARBALL=app-release.apk > /dev/null
+check "device-session: an APK artifact is uploaded wrapped as app.apk in a tarball" "app.apk" "$(tar -tzf "$DS_DIR/uploaded" 2> /dev/null | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$DS_DIR/uploaded"
+dsrun '/test desktop' "STATUSES=$ok_statuses" "RUN=$ok_run" SLOT_CODE=201 "SLOT_BODY=$body" > /dev/null
+check "device-session: a tarball artifact is uploaded as is" "tarball" "$(cat "$DS_DIR/uploaded" 2> /dev/null)"
 check "device-session: stop ends the session" "yes" "$(dsrun '/test stop' | grep -q 'ended by @rev' && echo yes)"
 check "device-session: the comment carries its marker" "yes" "$(dsrun '/test' | grep -q 'device-session' && echo yes)"
 unset -f gh curl
@@ -393,7 +400,8 @@ rm -rf "$DS_DIR"
 # devices/firewall.sh against stub docker and iptables: the rule order, --dry-run changes nothing, and
 # --check says whether a reboot has dropped the rules.
 FW_DIR=$(mktemp -d)
-printf '#!/bin/sh\necho 10.9.0.0/24\n' > "$FW_DIR/docker"
+# shellcheck disable=SC2016 # the stub's $3 must stay literal
+printf '#!/bin/sh\ncase "$3" in othernet) echo 10.9.1.0/24 ;; *) echo 10.9.0.0/24 ;; esac\n' > "$FW_DIR/docker"
 # shellcheck disable=SC2016 # the stub's $ variables must stay literal
 printf '#!/bin/sh\necho "$*" >> "$FW_LOG"\ncase "$1" in -C) exit "${IPT_C_RC:-0}" ;; -S) [ "${IPT_S_RC:-0}" = 0 ] || exit "$IPT_S_RC"; echo "-N $2"; echo "${IPT_LAST:--A $2 -j DROP}"; exit 0 ;; esac\nexit 0\n' > "$FW_DIR/iptables"
 chmod +x "$FW_DIR/docker" "$FW_DIR/iptables"
@@ -401,13 +409,21 @@ fw() { FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh slotne
 : > "$FW_DIR/log"
 fw_out=$(fw --dry-run)
 check "firewall: --dry-run runs no iptables" "0" "$(wc -l < "$FW_DIR/log" | tr -d ' ')"
-check "firewall: the slot network only opens the proxy and agent ports" "1" "$(grep -c -- '-d 10.9.0.0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT' <<< "$fw_out")"
+check "firewall: the slot network only opens the proxy and agent ports" "1" "$(grep -c -- '-s 10.9.0.0/24 -d 10.9.0.0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT' <<< "$fw_out")"
 host_drop=$(grep -n -- '-d 1.2.3.4/32 -j DROP' <<< "$fw_out" | cut -d: -f1)
 dns_udp=$(grep -n -- '-p udp --dport 53 -j ACCEPT' <<< "$fw_out" | cut -d: -f1)
 web_open=$(grep -n -- '-p tcp -m multiport --dports 80,443 -j ACCEPT' <<< "$fw_out" | tail -1 | cut -d: -f1)
 check "firewall: DNS is allowed only after the private and host drops" "yes" "$([ "$dns_udp" -gt "$host_drop" ] && [ "$dns_udp" -lt "$web_open" ] && echo yes)"
 check "firewall: slot traffic to the box itself is hooked into INPUT" "1" "$(grep -c -- 'iptables -I INPUT -s 10.9.0.0/24 -j DEVICES-INPUT' <<< "$fw_out")"
 check "firewall: the last rule of the egress chain drops" "1" "$(grep -- 'iptables -A DEVICES-EGRESS' <<< "$fw_out" | tail -1 | grep -c -- '-j DROP')"
+fw_two=$(FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh "slotnet othernet" 1.2.3.4 --dry-run)
+check "firewall: two networks share one chain, built once" "1" "$(grep -c -- 'iptables -N DEVICES-EGRESS' <<< "$fw_two")"
+check "firewall: each network gets its own slot-port rule and hooks" "6" "$(grep -c -E -- '(-s 10.9.[01].0/24 -d 10.9.[01].0/24 -p tcp -m multiport --dports 4180,8080 -j ACCEPT|-I DOCKER-USER -s 10.9.[01].0/24|-I INPUT -s 10.9.[01].0/24)' <<< "$fw_two")"
+fw_two_comma=$(FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh "slotnet,othernet" 1.2.3.4 --dry-run)
+check "firewall: one slot cannot reach another slot's proxy or agent" "0" "$(grep -c -E -- '-s 10.9.0.0/24 -d 10.9.1.0/24|-s 10.9.1.0/24 -d 10.9.0.0/24' <<< "$fw_two")"
+check "firewall: networks can be comma separated" "2" "$(grep -c -- '-I DOCKER-USER -s' <<< "$fw_two_comma")"
+fw_one_gone=$(IPT_C_RC=1 FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh "slotnet othernet" 1.2.3.4 --check); fw_rc=$?
+check "firewall: --check names the hook of each network that is missing" "1 2" "$fw_rc $(grep -c 'MISSING: hook in DOCKER-USER' <<< "$fw_one_gone")"
 : > "$FW_DIR/log"
 fw_ok=$(fw --check); fw_rc=$?
 check "firewall: --check passes when the rules are in place" "0 OK" "$fw_rc ${fw_ok%%:*}"

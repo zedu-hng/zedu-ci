@@ -44,6 +44,8 @@ CFG = {
     "ready_timeout": int(os.environ.get("READY_TIMEOUT", "30")),
     "app_uid": int(os.environ.get("APP_UID", "10001")),
     "app_gid": int(os.environ.get("APP_GID", "10001")),
+    # Numeric gids the app user also gets, e.g. the group that owns /dev/kvm for an emulator.
+    "app_groups": [int(g) for g in os.environ.get("APP_GROUPS", "").replace(",", " ").split()],
 }
 COOKIE = "__Host-device"
 VIEWER_PATH = "/vnc.html?autoconnect=1&resize=scale"
@@ -137,7 +139,7 @@ def app_user():
     (the tests) start the app as the current user."""
     if os.geteuid() != 0:
         return {}
-    return {"user": CFG["app_uid"], "group": CFG["app_gid"], "extra_groups": []}
+    return {"user": CFG["app_uid"], "group": CFG["app_gid"], "extra_groups": list(CFG["app_groups"])}
 
 
 def hand_over(path):

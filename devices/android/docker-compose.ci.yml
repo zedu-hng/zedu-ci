@@ -1,0 +1,7 @@
+# CI override for the smoke test: the image built in the job and the proxy published on the runner.
+services:
+  android-slot:
+    image: zedu-device-android:test
+  auth:
+    ports:
+      - "14181:4180"

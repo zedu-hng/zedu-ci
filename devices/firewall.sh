@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Egress rules for the device slots' Docker network: a slot runs a PR's build, so it may reach the
-# internet and the box's own web ports (team backends sit behind Traefik) and nothing else.
+# Egress rules for the device slots' Docker networks (one per slot service, space or comma separated):
+# a slot runs a PR's build, so it may reach the internet and the box's own web ports (team backends sit
+# behind Traefik) and nothing else. One chain serves every network, so a re-run always agrees with itself.
 # Run as root on the box. Safe to re-run. `--dry-run` prints the rules without applying them; `--check`
 # applies nothing and exits non-zero (naming what is missing) when the rules are not in place, which is
 # what a reboot does to them: they live in memory. devices-firewall.service re-applies them at boot.
-# Usage: devices/firewall.sh <docker network name> <host public ip> [--dry-run | --check]
+# Usage: devices/firewall.sh <docker network name[,name...]> <host public ip> [--dry-run | --check]
 set -euo pipefail
-net=${1:?usage: firewall.sh <docker network> <host public ip> [--dry-run | --check]}
-host_ip=${2:?usage: firewall.sh <docker network> <host public ip> [--dry-run | --check]}
+net=${1:?usage: firewall.sh <docker network[,network...]> <host public ip> [--dry-run | --check]}
+host_ip=${2:?usage: firewall.sh <docker network[,network...]> <host public ip> [--dry-run | --check]}
 dry=${3:-}
 
 slot_ports=${SLOT_PORTS:-4180,8080}  # login proxy, agent
-subnet=$(docker network inspect "$net" --format '{{(index .IPAM.Config 0).Subnet}}')
+subnets=()
+IFS=', ' read -r -a nets <<< "$net"
+for n in "${nets[@]}"; do
+  subnets+=("$(docker network inspect "$n" --format '{{(index .IPAM.Config 0).Subnet}}')")
+done
 chain=DEVICES-EGRESS
 input=DEVICES-INPUT
 run() { if [ "$dry" = --dry-run ]; then echo "+ $*"; else "$@"; fi; }
@@ -23,9 +28,11 @@ if [ "$dry" = --check ]; then
   # A chain rebuilt halfway (or flushed) exists but does not end in its DROP, so it lets everything through.
   [ "$(iptables -S "$chain" 2> /dev/null | tail -n 1)" = "-A $chain -j DROP" ] || { echo "MISSING: final DROP in $chain"; missing=1; }
   [ "$(iptables -S "$input" 2> /dev/null | tail -n 1)" = "-A $input -j DROP" ] || { echo "MISSING: final DROP in $input"; missing=1; }
-  iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2> /dev/null || { echo "MISSING: hook in DOCKER-USER for $subnet"; missing=1; }
-  iptables -C INPUT -s "$subnet" -j "$input" 2> /dev/null || { echo "MISSING: hook in INPUT for $subnet"; missing=1; }
-  [ "$missing" = 0 ] && echo "OK: the rules for $net ($subnet) are in place."
+  for subnet in "${subnets[@]}"; do
+    iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2> /dev/null || { echo "MISSING: hook in DOCKER-USER for $subnet"; missing=1; }
+    iptables -C INPUT -s "$subnet" -j "$input" 2> /dev/null || { echo "MISSING: hook in INPUT for $subnet"; missing=1; }
+  done
+  [ "$missing" = 0 ] && echo "OK: the rules for $net (${subnets[*]}) are in place."
   exit "$missing"
 fi
 
@@ -34,8 +41,11 @@ run iptables -N "$chain" 2>/dev/null || run iptables -F "$chain"
 run iptables -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 # Inside the slot network only the login proxy and agent ports are open: Traefik reaches the proxy, the
 # proxy reaches the agent. A slot cannot open any other port on another container; the proxy needs a
-# GitHub login and the agent needs the token or a viewer cookie.
-run iptables -A "$chain" -d "$subnet" -p tcp -m multiport --dports "$slot_ports" -j ACCEPT
+# GitHub login and the agent needs the token or a viewer cookie. Source and destination must be the same
+# network: with several slots, one slot's app must not reach another slot's proxy or agent.
+for subnet in "${subnets[@]}"; do
+  run iptables -A "$chain" -s "$subnet" -d "$subnet" -p tcp -m multiport --dports "$slot_ports" -j ACCEPT
+done
 # Backends: connections addressed to the box public IP on 80 and 443 (they are DNAT-ed to Traefik).
 run iptables -A "$chain" -p tcp -m multiport --dports 80,443 -m conntrack --ctstate DNAT --ctorigdst "$host_ip" -j ACCEPT
 # Everything private, link-local, carrier-grade NAT, and the box itself on any other port.
@@ -51,17 +61,21 @@ run iptables -A "$chain" -p tcp --dport 53 -j ACCEPT
 run iptables -A "$chain" -p tcp -m multiport --dports 80,443 -j ACCEPT
 run iptables -A "$chain" -j DROP
 
-# Hook the chain into DOCKER-USER (once) for everything leaving the slot network.
-if [ "$dry" = --dry-run ] || ! iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2>/dev/null; then
-  run iptables -I DOCKER-USER -s "$subnet" -j "$chain"
-fi
+# Hook the chain into DOCKER-USER (once per network) for everything leaving a slot network.
+for subnet in "${subnets[@]}"; do
+  if [ "$dry" = --dry-run ] || ! iptables -C DOCKER-USER -s "$subnet" -j "$chain" 2>/dev/null; then
+    run iptables -I DOCKER-USER -s "$subnet" -j "$chain"
+  fi
+done
 
 # Traffic from a slot to the box itself (the bridge gateway, host-bound ports such as SSH or the
 # Coolify dashboard) goes through INPUT, not DOCKER-USER, so it needs its own rule: replies only.
 run iptables -N "$input" 2>/dev/null || run iptables -F "$input"
 run iptables -A "$input" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 run iptables -A "$input" -j DROP
-if [ "$dry" = --dry-run ] || ! iptables -C INPUT -s "$subnet" -j "$input" 2>/dev/null; then
-  run iptables -I INPUT -s "$subnet" -j "$input"
-fi
-echo "Rules for $net ($subnet) in place. They are held in memory: install devices-firewall.service so a reboot re-applies them (devices/README.md)."
+for subnet in "${subnets[@]}"; do
+  if [ "$dry" = --dry-run ] || ! iptables -C INPUT -s "$subnet" -j "$input" 2>/dev/null; then
+    run iptables -I INPUT -s "$subnet" -j "$input"
+  fi
+done
+echo "Rules for $net (${subnets[*]}) in place. They are held in memory: install devices-firewall.service so a reboot re-applies them (devices/README.md)."

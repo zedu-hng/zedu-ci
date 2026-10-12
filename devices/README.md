@@ -27,12 +27,12 @@ slot come next.
 A reviewer (anyone with write access to the repo) comments on the PR. The repo's
 `.github/workflows/device-session.yml` calls zedu-ci's reusable `device-session.yml`:
 
-| Comment         | What                                                                                  |
-| --------------- | ------------------------------------------------------------------------------------- |
-| `/test desktop` | Starts a session on this PR's build. Needs the head commit's required statuses green. |
-| `/test extend`  | Adds 15 minutes, once.                                                                |
-| `/test stop`    | Ends the session.                                                                     |
-| `/test`         | Shows these commands.                                                                 |
+| Comment                            | What                                                                                                        |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `/test desktop` or `/test android` | Starts a session on this PR's build (the repo's platform). Needs the head commit's required statuses green. |
+| `/test extend`                     | Adds 15 minutes, once.                                                                                      |
+| `/test stop`                       | Ends the session.                                                                                           |
+| `/test`                            | Shows these commands.                                                                                       |
 
 The workflow keeps one comment per PR and edits it. A busy slot's answer names the PR and who holds it.
 The repo needs the secret `DEVICE_TOKEN` (the same value as the slot's) and the caller workflow.
@@ -98,6 +98,32 @@ container (production flags, stub app, viewer link, cookie, busy slot) and publi
 
    Open the returned path (it asks for the GitHub login first), then check these four things: the app renders under software GL, sign-in
    works (the keyring), the stream is responsive, and `DELETE /api/session` frees the slot.
+
+## Android slot
+
+The same agent and login in front of an x86_64 Android 14 emulator (`devices/android/`). The emulator
+needs KVM, so the slot gets `/dev/kvm` and its numeric group id. A reviewer comments `/test android`
+on a mobile PR; the workflow downloads the fork's `android-apk` artifact, wraps the APK as `app.apk`,
+and the slot boots a fresh emulator from a copy of the baked device, installs the APK and opens it. The first
+boot of a session takes a minute or two. There is no Google Play, and sign-in with Google, push and
+calls do not work in review builds (their keys are unset).
+
+| Path                         | What                                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------- |
+| `android/Dockerfile`         | Ubuntu 24.04, the SDK (pinned by checksum), the emulator, one baked AVD.        |
+| `android/session.sh`         | Display stack, emulator, then install and open the APK once Android has booted. |
+| `android/docker-compose.yml` | The slot (7 GB, 3 CPU, `/dev/kvm`) and the same login proxy as desktop.         |
+
+Setup differs from desktop in four things:
+
+1. A second GitHub OAuth app, callback `https://android.preview.groups.zedu.chat/oauth2/callback`.
+2. `KVM_GID` on the service: `getent group kvm` on the box. Without it the emulator cannot open `/dev/kvm`.
+3. The domain `android.preview.groups.zedu.chat` goes on the `auth` service (port 4180).
+4. The firewall covers both slots: set `NETWORK` in `/etc/default/devices-firewall` to both networks,
+   space separated, and restart `devices-firewall.service`.
+
+CI boots the emulator for real on a runner with KVM (a stub APK, so only the boot, the display and the
+agent are checked). Installing and opening a real app is checked by hand on the box.
 
 ## Limits and risks
 

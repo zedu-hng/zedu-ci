@@ -202,3 +202,109 @@ jobs:
             docker tag zedu-device-desktop:test "$IMAGE:$tag"
             docker push "$IMAGE:$tag"
           done
+
+  android:
+    name: Android slot image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/zedu-hng/zedu-device-android
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The SDK, the emulator and the system image make a multi-gigabyte build.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build
+        run: docker build -f devices/android/Dockerfile -t zedu-device-android:test .
+
+      - name: Tools are present
+        run: |
+          docker run --rm --entrypoint bash zedu-device-android:test -c '
+            emulator -version | head -2
+            adb version | head -1
+            avdmanager list avd | grep -q "Name: slot" || { echo "the baked AVD is missing"; exit 1; }
+            for bin in Xtigervnc websockify openbox python3 tini; do
+              command -v "$bin" > /dev/null || { echo "missing tool: $bin"; exit 1; }
+            done'
+
+      - name: Compose is valid
+        env:
+          DEVICE_TOKEN: smoke
+          KVM_GID: "993"
+          GH_OAUTH_CLIENT_ID: ci
+          GH_OAUTH_CLIENT_SECRET: ci
+          OAUTH_COOKIE_SECRET: 0123456789abcdef0123456789abcdef
+        run: docker compose -f devices/android/docker-compose.yml -f devices/android/docker-compose.ci.yml config -q
+
+      # Hosted Linux runners have /dev/kvm, but it is root-only until a udev rule opens it.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Emulator boots under a session
+        run: |
+          trap 'docker logs slot 2>&1 | tail -40; docker exec slot sh -c "tail -n 40 /tmp/emulator.log" 2>&1; docker rm -f slot > /dev/null 2>&1' EXIT
+          [ -e /dev/kvm ] || { echo "::error::No /dev/kvm on this runner, so the emulator cannot be boot-tested. Not publishing an untested image."; exit 1; }
+          adb_in() { docker exec -u 10001 -e HOME=/home/device slot "$@"; }
+          docker run -d --name slot -p 18081:8080 --memory 7g --cpus 3 \
+            --read-only --tmpfs /tmp:size=512m,mode=1777 --tmpfs /session:exec,nosuid,nodev,size=8g,mode=0755 \
+            --tmpfs /home/device:size=512m,uid=10001,gid=10001,mode=0700 \
+            --device /dev/kvm -e APP_GROUPS="$(stat -c %g /dev/kvm)" \
+            --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+            --security-opt no-new-privileges:true --pids-limit 1024 \
+            -e DEVICE_TOKEN=smoke -e TTL_SECONDS=900 zedu-device-android:test > /dev/null
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:18081/healthz > /dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18081/healthz | grep -qx ok
+
+          # The slot takes an APK as app.apk. This one is not a real app; the install is tried and fails,
+          # which leaves the emulator up, and booting is what is being checked.
+          mkdir art && printf 'not an apk' > art/app.apk && tar -czf art.tar.gz -C art app.apk
+          resp=$(curl -sS -X PUT -H 'Authorization: Bearer smoke' -H 'Expect:' --data-binary @art.tar.gz \
+            'http://127.0.0.1:18081/api/session?pr=1&sha=smoke&who=ci')
+          case "$(jq -r .path <<< "$resp")" in /s/*) ;; *) echo "No viewer path in: $resp"; exit 1 ;; esac
+
+          for _ in $(seq 1 120); do
+            [ "$(adb_in adb shell getprop sys.boot_completed 2> /dev/null | tr -d '\r')" = 1 ] && booted=1 && break
+            sleep 5
+          done
+          [ "${booted:-}" = 1 ] || { echo "Android did not boot within 10 minutes"; exit 1; }
+          devices=$(adb_in adb devices)
+          echo "$devices"
+          grep -Eq 'emulator-[0-9]+[[:space:]]+device' <<< "$devices" || { echo "no emulator in adb devices"; exit 1; }
+
+          # The screen is real: a screenshot of the device has content. Right after boot the launcher has
+          # not drawn yet (a blank frame is about 6 KB), so wait for a real one.
+          adb_in adb shell input keyevent KEYCODE_WAKEUP || true
+          size=0
+          for _ in $(seq 1 24); do
+            size=$(adb_in sh -c 'adb exec-out screencap -p | wc -c' | tr -d '[:space:]')
+            [ "${size:-0}" -gt 20000 ] && break
+            sleep 5
+          done
+          echo "screenshot: ${size:-0} bytes"
+          [ "${size:-0}" -gt 20000 ] || { echo "screenshot is only ${size:-0} bytes"; exit 1; }
+          echo "Android booted; screenshot $size bytes."
+
+      - name: Publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          for tag in main "${GITHUB_SHA::12}"; do
+            docker tag zedu-device-android:test "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done

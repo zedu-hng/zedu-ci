@@ -2,7 +2,7 @@
 # desktop.preview.groups.zedu.chat on the `auth` service (port 4180), and set these secrets:
 #   DEVICE_TOKEN          the agent's bearer token (the /test workflow uses it)
 #   GH_OAUTH_CLIENT_ID, GH_OAUTH_CLIENT_SECRET   the zedu-hng GitHub OAuth app for this hostname
-#   OAUTH_COOKIE_SECRET   32 random bytes, base64 or hex (oauth2-proxy's session cookie)
+#   OAUTH_COOKIE_SECRET   exactly 16, 24 or 32 characters (oauth2-proxy's session cookie): `openssl rand -hex 16`
 # See devices/README.md. Only `auth` is reachable from outside; the agent is behind it.
 services:
   desktop-slot:
