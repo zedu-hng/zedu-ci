@@ -307,7 +307,8 @@ check "pr-checks-node: a repo without previews is always full" "mode=full " "$(d
 recb() { (cd "$d" && JEST_ENABLED=false BUILD_ENABLED=$1 INSTALL=success FILE_POLICY=success GITLEAKS=success HEURISTICS=success COMMITLINT=success AUDIT=success PRETTIER=success ESLINT=success TYPES=success REVIEW=success BUILD=$2 bash rec.sh && cut -f1,2 results.tsv | tail -1 | tr '\t' ' '); }
 check "pr-checks-node: no Build row without a build" "PR review success" "$(recb false skipped)"
 check "pr-checks-node: a failed build posts a failed Build row" "Build failure" "$(recb true failure)"
-(cd "$d" && : > env2 && printf 'x\ty\tz\n' > results.tsv && GITHUB_ENV="$PWD/env2" SKIP_PUBLISH=true bash "$OLDPWD/scripts/publish-results.sh"); check "pr-checks-node: SKIP_PUBLISH posts nothing" "fail=0 no-json" "$(cat "$d/env2" | tr '\n' ' ')$([ -f "$d/pr-checks-results.json" ] || echo no-json)"
+(cd "$d" && : > env2 && printf 'x\ty\tz\n' > results.tsv && GITHUB_ENV="$PWD/env2" SKIP_PUBLISH=true bash "$OLDPWD/scripts/publish-results.sh")
+check "pr-checks-node: SKIP_PUBLISH posts nothing" "fail=0 no-json" "$(tr '\n' ' ' < "$d/env2")$([ -f "$d/pr-checks-results.json" ] || echo no-json)"
 rm -rf "$d"
 
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
