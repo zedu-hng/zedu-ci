@@ -74,6 +74,21 @@ install_and_open() {
 }
 install_and_open &
 
+# The emulator picks its own window scale (about half size here) and ignores -scale. Once its window exists,
+# resize it to the device's full size at the top-left of the display, so the phone fills the display.
+fit_window() {
+  local wid=""
+  for _ in $(seq 1 180); do
+    wid=$(xdotool search --onlyvisible --name '^Android Emulator' 2> /dev/null | head -1)
+    [ -n "$wid" ] && break
+    sleep 1
+  done
+  [ -n "$wid" ] || { echo "no emulator window to resize" >&2; return; }
+  sleep 3
+  xdotool windowsize "$wid" "$width" "$height" windowmove "$wid" 0 0 2> /dev/null || echo "could not resize the emulator window" >&2
+}
+fit_window &
+
 wait "$emulator_pid"
 code=$?
 echo "emulator exited with $code" >&2

@@ -284,6 +284,18 @@ jobs:
           echo "$devices"
           grep -Eq 'emulator-[0-9]+[[:space:]]+device' <<< "$devices" || { echo "no emulator in adb devices"; exit 1; }
 
+          # The emulator window is resized to the device's full size, so the phone fills the display (it opens
+          # at about half size on its own). Its client area must reach 90% of the device's height.
+          wh=0
+          for _ in $(seq 1 30); do
+            geo=$(docker exec -u 10001 -e DISPLAY=:1 slot sh -c 'xdotool search --onlyvisible --name "^Android Emulator" | head -1 | xargs -r xdotool getwindowgeometry' 2> /dev/null | sed -n 's/.*Geometry: *[0-9]*x\([0-9]*\).*/\1/p')
+            wh=${geo:-0}
+            [ "$wh" -ge 1152 ] && break
+            sleep 2
+          done
+          echo "emulator window height: $wh (device 1280)"
+          [ "$wh" -ge 1152 ] || { echo "the emulator window was not resized to fill the display"; exit 1; }
+
           # The screen is real: a screenshot of the device has content. Right after boot the launcher has
           # not drawn yet (a blank frame is about 6 KB), so wait for a real one.
           adb_in adb shell input keyevent KEYCODE_WAKEUP || true

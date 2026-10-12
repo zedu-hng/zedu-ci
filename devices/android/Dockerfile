@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcb1 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render0 \
       libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 \
       libxcb-randr0 libxcb-util1 libxcb-cursor0 \
-      fonts-dejavu-core \
+      fonts-dejavu-core xdotool \
     && rm -rf /var/lib/apt/lists/*
 
 # Android SDK command-line tools, pinned by checksum (Google's repository manifest lists the SHA-1
