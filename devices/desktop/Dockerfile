@@ -5,7 +5,7 @@ FROM public.ecr.aws/docker/library/ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tini python3 ca-certificates curl \
-      tigervnc-standalone-server novnc websockify openbox dbus-x11 gnome-keyring \
+      tigervnc-standalone-server novnc websockify openbox dbus-x11 gnome-keyring libsecret-tools \
       libgtk-3-0t64 libglib2.0-0t64 libatk1.0-0t64 libcairo2 libcairo-gobject2 libepoxy0 \
       libfontconfig1 libgdk-pixbuf-2.0-0 libharfbuzz0b libpango-1.0-0 libpangocairo-1.0-0 \
       libnotify4 libsecret-1-0 libayatana-appindicator3-1 libdbusmenu-glib4 libayatana-ido3-0.4-0 \
@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin device
 COPY devices/agent/agent.py /opt/agent/agent.py
 COPY devices/desktop/session.sh /opt/agent/session.sh
+COPY devices/desktop/keyring.sh /opt/agent/keyring.sh
 COPY devices/desktop/needed-libs.txt /opt/agent/needed-libs.txt
 RUN chmod 755 /opt/agent/agent.py /opt/agent/session.sh
 

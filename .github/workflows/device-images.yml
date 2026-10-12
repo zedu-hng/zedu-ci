@@ -57,6 +57,23 @@ jobs:
             done
             exit "$missing"'
 
+      # The app reads its saved login through libsecret. A locked or missing keyring made it hang on its
+      # splash screen (KeyringLocked), so store and read a secret exactly as the session does.
+      - name: Keyring works
+        run: |
+          docker run --rm -u 10001 --tmpfs /home/device:uid=10001,gid=10001,mode=0700 -e HOME=/home/device \
+            --entrypoint bash zedu-device-desktop:test -c '
+              eval "$(dbus-launch --sh-syntax)"
+              . /opt/agent/keyring.sh
+              printf secret | secret-tool store --label=ci service ci
+              [ "$(secret-tool lookup service ci)" = secret ]'
+          # Control, informational: the old setup (empty password) on a fresh home.
+          docker run --rm -u 10001 --tmpfs /home/device:uid=10001,gid=10001,mode=0700 -e HOME=/home/device \
+            --entrypoint bash zedu-device-desktop:test -c '
+              eval "$(dbus-launch --sh-syntax)"
+              eval "$(printf "" | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
+              printf secret | secret-tool store --label=ci service ci 2>&1 | head -2; echo "empty-password control exit: $?"' || true
+
       - name: Session runs end to end
         run: |
           trap 'docker logs slot 2>&1 | tail -40; docker rm -f slot > /dev/null 2>&1' EXIT
