@@ -12,7 +12,7 @@ slot come next.
 1. A trusted zedu-ci workflow checks the commenter is a reviewer, the fork build is green for the PR's
    head SHA and its scans passed, downloads the fork's `desktop-linux` artifact, and uploads it to the
    slot: `PUT /api/session?pr=&sha=&who=` with `Authorization: Bearer $DEVICE_TOKEN`.
-2. The agent unpacks it into a tmpfs, starts the display stack and the app, and answers `201` with a
+2. The agent unpacks it into a tmpfs (`/session`, mounted `exec`), starts the display stack and the app, and answers `201` with a
    one-time path `/s/<token>`. A busy slot answers `409` with the holder and the time left.
 3. The reviewer opens `https://desktop.preview.groups.zedu.chat/s/<token>`. The link sets a
    `__Host-device` cookie (host-only, so a sibling preview page cannot shadow it) and redirects to noVNC.

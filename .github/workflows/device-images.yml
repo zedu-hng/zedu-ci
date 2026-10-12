@@ -61,7 +61,7 @@ jobs:
         run: |
           trap 'docker logs slot 2>&1 | tail -40; docker rm -f slot > /dev/null 2>&1' EXIT
           docker run -d --name slot -p 18080:8080 \
-            --read-only --tmpfs /tmp:size=1g,mode=1777 --tmpfs /home/device:size=512m,uid=10001,gid=10001,mode=0700 \
+            --read-only --tmpfs /tmp:size=256m,mode=1777 --tmpfs /session:exec,nosuid,nodev,size=1g,mode=0755 --tmpfs /home/device:size=512m,uid=10001,gid=10001,mode=0700 \
             --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
             --security-opt no-new-privileges:true --pids-limit 512 \
             -e DEVICE_TOKEN=smoke -e TTL_SECONDS=120 zedu-device-desktop:test > /dev/null
