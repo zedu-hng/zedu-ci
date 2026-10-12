@@ -256,6 +256,11 @@ async def api(method, path, query, headers, reader, writer):
         slot.starting = True
         try:
             await start_session(query, headers, reader, writer)
+        except Exception as e:  # tell the caller what failed instead of dropping the connection
+            traceback.print_exc()
+            sys.stderr.flush()
+            shutil.rmtree(CFG["work"], ignore_errors=True)
+            writer.write(json_resp(500, {"error": f"{type(e).__name__}: {e}"}))
         finally:
             slot.starting = False
     elif path == "/api/extend" and method == "POST":
@@ -370,7 +375,7 @@ async def handle(reader, writer):
         else:
             writer.write(text_resp(403, "No active session. Ask a reviewer to comment /test on the PR.\n"))
         await writer.drain()
-    except (ConnectionError, OSError):
+    except ConnectionError:
         pass
     except Exception:  # a bug must show in the container log, not only as a dropped connection
         traceback.print_exc()
