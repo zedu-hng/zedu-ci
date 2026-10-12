@@ -394,6 +394,7 @@ rm -rf "$DS_DIR"
 # --check says whether a reboot has dropped the rules.
 FW_DIR=$(mktemp -d)
 printf '#!/bin/sh\necho 10.9.0.0/24\n' > "$FW_DIR/docker"
+# shellcheck disable=SC2016 # the stub's $ variables must stay literal
 printf '#!/bin/sh\necho "$*" >> "$FW_LOG"\ncase "$1" in -C) exit "${IPT_C_RC:-0}" ;; -S) exit "${IPT_S_RC:-0}" ;; esac\nexit 0\n' > "$FW_DIR/iptables"
 chmod +x "$FW_DIR/docker" "$FW_DIR/iptables"
 fw() { FW_LOG="$FW_DIR/log" PATH="$FW_DIR:$PATH" bash devices/firewall.sh slotnet 1.2.3.4 "$@"; }
@@ -416,6 +417,7 @@ check "firewall: --check fails after a reboot dropped the rules" "1" "$fw_rc"
 check "firewall: --check names what is missing" "yes" "$(grep -q 'MISSING: hook in DOCKER-USER' <<< "$fw_gone" && grep -q 'MISSING: chain DEVICES-EGRESS' <<< "$fw_gone" && echo yes)"
 UNIT=devices/systemd/devices-firewall.service
 check "firewall unit: starts after Docker and needs it" "yes" "$(grep -q '^After=docker.service' "$UNIT" && grep -q '^Requires=docker.service' "$UNIT" && echo yes)"
+# shellcheck disable=SC2016 # ${NETWORK} is literal unit syntax
 check "firewall unit: runs the script with the configured network and ip" "1" "$(grep -c '^ExecStart=/usr/local/sbin/devices-firewall.sh ${NETWORK} ${HOST_IP}$' "$UNIT")"
 check "firewall unit: retries until the network exists" "yes" "$(grep -q '^Restart=on-failure' "$UNIT" && grep -q '^RestartSec=' "$UNIT" && echo yes)"
 check "firewall unit: enabled at boot" "1" "$(grep -c '^WantedBy=multi-user.target' "$UNIT")"
