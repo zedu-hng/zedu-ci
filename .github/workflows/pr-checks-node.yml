@@ -2,7 +2,7 @@ name: PR checks (Node)
 
 # Reusable. Review-org replacement for Zedu's "PR pre-commit checks", "PR Review Bot", "Commitlint",
 # the file-policy / audit / gitleaks half of "Security checks" and the heuristics half of "Malware
-# scan" in an npm repo (zedu-mobile). Those workflows are disabled in zedu-hng (their files stay as
+# scan" in an npm or pnpm repo (zedu-mobile, zedu-fe). Those workflows are disabled in zedu-hng (their files stay as
 # upstream, so syncs don't conflict); semgrep and ClamAV run in pr-scans.yml.
 #
 # One job: checkout and install once, run every check (each runs even if an earlier one fails).
@@ -13,8 +13,12 @@ name: PR checks (Node)
 #   pr-checks-results  per-check results; pr-review-comment.yml posts them as commit statuses
 #   pr-review-report   the review bot's report, posted as a PR comment by the same workflow
 #
+# With `preview: true` (zedu-fe) the one build also becomes the PR's preview image, and a `preview`
+# label or a Backend URL edit rebuilds only the preview (no checks, no results). That adds a third
+# artifact, fe-preview (meta.json + image.tar.gz), which fe-preview-deploy.yml deploys.
+#
 # Caller: .github/workflows/pr-checks.yml named "PR checks", on pull_request (opened, synchronize,
-# reopened, ready_for_review).
+# reopened, ready_for_review; zedu-fe adds labeled and edited, and filters them in its own `if`).
 # Caller permissions: contents: read.
 
 on:
@@ -23,10 +27,37 @@ on:
       node_version:
         type: string
         default: "20"
+      package_manager:
+        description: npm or pnpm
+        type: string
+        default: npm
+      pnpm_version:
+        type: string
+        default: "10.27.0"
       jest:
         description: Run `npx jest --ci` as the Jest check
         type: boolean
         default: false
+      next_types:
+        description: Write Next's type references before TypeScript (next-env.d.ts is not committed)
+        type: boolean
+        default: false
+      build:
+        description: Run `<package manager> run build` as the Build check
+        type: boolean
+        default: false
+      preview:
+        description: Package the build as the PR preview image (needs build; reads .github/preview*)
+        type: boolean
+        default: false
+      preview_config:
+        description: Name of the live preview settings in zedu-ci main (preview/<name>.env, <name>-orgs)
+        type: string
+        default: ""
+      build_env_file:
+        description: Public build env template in zedu-ci's build/, appended to .env for preview builds
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -35,18 +66,53 @@ jobs:
   checks:
     name: Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       SHA: ${{ github.event.pull_request.head.sha }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
+      PM: ${{ inputs.package_manager }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      DRAFT: ${{ github.event.pull_request.draft }}
+      ACTION: ${{ github.event.action }}
+      LABEL: ${{ github.event.label.name }}
+      LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      BODY_FROM: ${{ github.event.changes.body.from }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
 
+      # full: a code event; every check runs. preview: a preview label or Backend URL edit; only the
+      # preview is rebuilt (no checks, no results). none: a body edit that left the Backend URL line
+      # alone. Repos without previews are always full.
+      - name: Decide
+        id: mode
+        run: |
+          bline() {
+            local l
+            l=$(printf '%s\n' "$1" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
+            [ -n "$l" ] || { echo none; return 0; }
+            echo "line:$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$l")"
+          }
+          mode=full
+          if [ "${{ inputs.preview }}" = true ]; then
+            case "$ACTION" in
+              labeled) mode=preview ;;
+              edited) if [ "$(bline "$BODY_FROM")" = "$(bline "$PR_BODY")" ]; then mode=none; else mode=preview; fi ;;
+            esac
+          fi
+          echo "Event $ACTION: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          # publish-results.sh posts nothing for a preview-only run, so those statuses stay as they were.
+          [ "$mode" = full ] || echo "SKIP_PUBLISH=true" >> "$GITHUB_ENV"
+
       - name: Use the base branch's check scripts
+        if: steps.mode.outputs.mode == 'full'
         run: |
           git fetch -q --no-tags origin "$BASE_REF"
           for p in .github/scripts .github/pr-review.config.json .github/malware-scan.config.json .gitleaks.toml; do
@@ -57,14 +123,66 @@ jobs:
             fi
           done
 
+      # Preview settings are read live from zedu-ci main (like teams.yml); the Dockerfile comes from the
+      # base branch. Never from the PR. A read that fails means no preview.
+      - name: Preview gate
+        id: meta
+        if: inputs.preview && steps.mode.outputs.mode != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_REPO: ${{ job.workflow_repository }}
+          CONFIG: ${{ inputs.preview_config }}
+        run: |
+          cfg="$RUNNER_TEMP/cfg"; mkdir -p "$cfg"
+          for f in "$CONFIG.env:preview.env" "$CONFIG-orgs:preview-orgs"; do
+            gh api -H "Accept: application/vnd.github.raw" "repos/$CI_REPO/contents/preview/${f%%:*}?ref=main" > "$cfg/${f##*:}" \
+              || { echo "::warning::Couldn't read preview/${f%%:*} from $CI_REPO main; no preview."; exit 0; }
+          done
+          git fetch -q --no-tags origin "$BASE_REF"
+          git show "FETCH_HEAD:.github/preview/Dockerfile" > "$cfg/Dockerfile" 2>/dev/null || { echo "No .github/preview/Dockerfile on $BASE_REF; previews not set up."; exit 0; }
+          get() { sed -n "s/^$1=//p" "$cfg/preview.env" | head -1; }
+          [ "$(get PREVIEW_ENABLED)" = true ] || { echo "PREVIEW_ENABLED isn't true on $BASE_REF; no preview."; exit 0; }
+          [ "$DRAFT" != true ] || { echo "Draft PR; no preview."; exit 0; }
+
+          org=${HEAD_REPO%%/*}
+          if [ "$HEAD_REPO" = "$REPO" ]; then gate=reviewer
+          elif grep -v '^#' "$cfg/preview-orgs" | grep -qixF "$org"; then gate=registered
+          elif jq -e 'index("preview") != null' <<< "$LABELS" >/dev/null; then gate=label
+          else gate=skip; fi
+
+          host=$(get PREVIEW_BACKEND_HOST); override=false; error=""
+          line=$(printf '%s\n' "$PR_BODY" | tr -d '\r' | grep -iE '^[[:space:]]*backend url:' | head -1 || true)
+          if [ -n "$line" ]; then
+            url=$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$line")
+            if [[ "$url" =~ ^https://(api\.[a-z0-9-]+\.groups\.zedu\.chat)$ ]]; then
+              host=${BASH_REMATCH[1]}; override=true
+            else
+              error="Backend URL must look like https://api.<name>.groups.zedu.chat"
+            fi
+          fi
+          wanted=$([ "$gate" != skip ] && [ -z "$error" ] && echo true || echo false)
+
+          jq -n --arg pr "$PR" --arg sha "$SHA" --arg org "$org" --arg gate "$gate" --arg host "$host" \
+            --argjson override "$override" --arg error "$error" --arg action "$ACTION" --arg label "$LABEL" \
+            --argjson wanted "$wanted" \
+            '{pr: ($pr|tonumber), sha: $sha, org: $org, gate: $gate, backend_host: $host,
+              override: $override, error: $error, action: $action, label: $label, wanted: $wanted, image: false}' > meta.json
+          cat meta.json
+          {
+            echo "upload=true"; echo "wanted=$wanted"; echo "host=$host"
+            echo "domain=$(get PREVIEW_DOMAIN)"; echo "cfg=$cfg"
+          } >> "$GITHUB_OUTPUT"
+
       # Checks that read the tree as the PR left it run before install (no node_modules to scan).
       - name: File policy
         id: file_policy
+        if: steps.mode.outputs.mode == 'full'
         continue-on-error: true
         run: bash .github/scripts/verify-changed-files.sh "origin/$BASE_REF" HEAD
 
       - name: Gitleaks
         id: gitleaks
+        if: steps.mode.outputs.mode == 'full'
         continue-on-error: true
         run: |
           GITLEAKS_VERSION="8.24.2"
@@ -77,61 +195,76 @@ jobs:
           "$RUNNER_TEMP/gitleaks" detect --source . --log-opts "$BASE_SHA..$SHA" --config .gitleaks.toml --redact --no-banner || status=1
           exit "$status"
 
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: inputs.package_manager == 'pnpm' && (steps.mode.outputs.mode == 'full' || steps.meta.outputs.wanted == 'true')
+        with:
+          version: ${{ inputs.pnpm_version }}
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.mode.outputs.mode == 'full' || steps.meta.outputs.wanted == 'true'
         with:
           node-version: ${{ inputs.node_version }}
-          cache: npm
+          cache: ${{ inputs.package_manager }}
 
       - name: Malware heuristics
         id: heuristics
+        if: steps.mode.outputs.mode == 'full'
         continue-on-error: true
         run: node .github/scripts/scan-malware.mjs
 
       - name: Install dependencies
         id: install
-        run: npm ci
+        if: steps.mode.outputs.mode == 'full' || steps.meta.outputs.wanted == 'true'
+        run: |
+          if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci; fi
 
       - name: Commit messages
         id: commitlint
-        if: steps.install.outcome == 'success'
+        if: steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
-        run: npx commitlint --from "$BASE_SHA" --to "$SHA" --verbose
+        run: |
+          if [ "$PM" = pnpm ]; then x="pnpm exec"; else x=npx; fi
+          $x commitlint --from "$BASE_SHA" --to "$SHA" --verbose
 
       - name: Dependency audit
         id: audit
-        if: steps.install.outcome == 'success'
+        if: steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
         run: |
-          npm audit --audit-level moderate || true
-          npm audit --audit-level critical
+          "$PM" audit --audit-level moderate || true
+          "$PM" audit --audit-level critical
+
+      - name: Prepare TypeScript environment
+        if: inputs.next_types && steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
+        run: printf '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n' > next-env.d.ts
 
       - name: Prettier
         id: prettier
-        if: steps.install.outcome == 'success'
+        if: steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
-        run: npm run check-format
+        run: '"$PM" run check-format'
 
       - name: ESLint
         id: eslint
-        if: steps.install.outcome == 'success'
+        if: steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
-        run: npm run check-lint
+        run: '"$PM" run check-lint'
 
       - name: TypeScript
         id: types
-        if: steps.install.outcome == 'success'
+        if: steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
-        run: npm run check-types
+        run: '"$PM" run check-types'
 
       - name: Jest
         id: jest
-        if: inputs.jest && steps.install.outcome == 'success'
+        if: inputs.jest && steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
         run: npx jest --ci
 
       - name: PR review
         id: review
-        if: steps.install.outcome == 'success'
+        if: steps.mode.outputs.mode == 'full' && steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           node .github/scripts/pr-review/run.mjs \
@@ -141,7 +274,7 @@ jobs:
             --output review-report.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
+        if: always() && steps.mode.outputs.mode == 'full'
         with:
           name: pr-review-report
           path: |
@@ -150,10 +283,77 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # After every lint step, so Prettier and ESLint never see zedu-ci's files. Removed again below.
+      - name: Check out the public build env
+        if: inputs.build_env_file != '' && steps.meta.outputs.wanted == 'true' && steps.install.outcome == 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: build
+          persist-credentials: false
+
+      # One build: with the preview's public env when this PR gets a preview, plain otherwise.
+      - name: Build
+        id: build
+        if: >-
+          inputs.build && steps.install.outcome == 'success' &&
+          (steps.mode.outputs.mode == 'full' || steps.meta.outputs.wanted == 'true')
+        continue-on-error: true
+        env:
+          WANTED: ${{ steps.meta.outputs.wanted }}
+          HOST: ${{ steps.meta.outputs.host }}
+          DOMAIN: ${{ steps.meta.outputs.domain }}
+          BUILD_ENV: ${{ inputs.build_env_file }}
+        run: |
+          if [ "$WANTED" = true ]; then
+            {
+              [ -z "$BUILD_ENV" ] || grep '^NEXT_PUBLIC_' ".zedu-ci/build/$BUILD_ENV"
+              echo "NEXT_PUBLIC_API_URL=https://$HOST"
+              echo "NEXT_PUBLIC_BASE_URL=https://$HOST/api/v1"
+              echo "NEXT_PUBLIC_CONNECT_URL=wss://$HOST/centrifugo/connection/websocket"
+              echo "NEXT_PUBLIC_CLIENT_URL=https://$PR.$DOMAIN"
+            } > .env
+          fi
+          rm -rf .zedu-ci
+          "$PM" run build
+
+      - name: Package preview image
+        id: image
+        if: inputs.preview && steps.meta.outputs.wanted == 'true' && steps.build.outcome == 'success'
+        env:
+          CFG: ${{ steps.meta.outputs.cfg }}
+        run: |
+          [ -f .next/standalone/server.js ] || { echo "::error::No standalone output; next.config must keep output: standalone."; exit 1; }
+          img="$RUNNER_TEMP/img"
+          cp -r .next/standalone "$img"
+          mkdir -p "$img/.next" "$img/public/mainapp/_next"
+          cp -r .next/static "$img/.next/static"
+          [ -d public ] && cp -r public/. "$img/public/"
+          cp -r .next/static "$img/public/mainapp/_next/static"
+          cp "$CFG/Dockerfile" "$img/Dockerfile"
+          docker build -q -t fe-preview:local "$img"
+          docker save fe-preview:local | gzip > image.tar.gz
+          jq '.image = true' meta.json > meta.tmp && mv meta.tmp meta.json
+
+      # Uploaded whenever previews are set up, even without an image: deploy uses meta.json to report
+      # "no preview", an invalid Backend URL, or a failed build.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.meta.outputs.upload == 'true'
+        with:
+          name: fe-preview
+          path: |
+            meta.json
+            image.tar.gz
+          if-no-files-found: warn
+          retention-days: 1
+
       - name: Record results
-        if: always()
+        if: always() && steps.mode.outputs.mode == 'full'
         env:
           JEST_ENABLED: ${{ inputs.jest }}
+          BUILD_ENABLED: ${{ inputs.build }}
           FILE_POLICY: ${{ steps.file_policy.outcome }}
           GITLEAKS: ${{ steps.gitleaks.outcome }}
           HEURISTICS: ${{ steps.heuristics.outcome }}
@@ -165,6 +365,7 @@ jobs:
           TYPES: ${{ steps.types.outcome }}
           JEST: ${{ steps.jest.outcome }}
           REVIEW: ${{ steps.review.outcome }}
+          BUILD: ${{ steps.build.outcome }}
         run: |
           : > results.tsv
           row() { # context outcome
@@ -189,6 +390,7 @@ jobs:
           row "TypeScript" "$TYPES"
           if [ "$JEST_ENABLED" = true ]; then row "Jest" "$JEST"; fi
           row "PR review" "$REVIEW"
+          if [ "$BUILD_ENABLED" = true ]; then row "Build" "$BUILD"; fi
 
       # shared:publish-results begin
       # Last, after every scan, so the scanners never see zedu-ci's files. Same in every checks

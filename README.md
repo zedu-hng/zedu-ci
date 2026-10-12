@@ -46,7 +46,7 @@ callers never ship upstream.
 
 | File | What it does | Caller trigger |
 |---|---|---|
-| `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review (zedu-mobile) | `pull_request` |
+| `pr-checks-node.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, audit, Prettier, ESLint, TypeScript, Jest, PR review, optional build and FE preview image (zedu-mobile, zedu-fe) | `pull_request` |
 | `pr-checks-flutter.yml` | One job: forbidden patterns, Lazarus scanner, analyze, format, tests, Trivy (zedu-desktop) | `pull_request` |
 | `pr-checks-go.yml` | One job: file policy, Gitleaks, malware heuristics, commit messages, dependency audit, format, go vet, build, tests, PR review (zedu-be) | `pull_request` |
 | `pr-scans.yml` | Semgrep (optional), ClamAV and the obfuscation scan, with per-repo rule packs, paths and excludes | `pull_request` |
@@ -72,6 +72,13 @@ on dev yet). Then:
 `.env` is written from `build/<repo>.env` at the same zedu-ci commit as the workflow, with
 `{{backend}}` and `{{client}}` filled in. Public values only: anything in `.env` ships inside the app. Contributor forks
 need no `APP_ENV_FILE` or other setup.
+
+## preview/
+
+Live settings for zedu-fe PR previews: `zedu-fe.env` (`PREVIEW_ENABLED` kill switch, domain, default
+backend host) and `zedu-fe-orgs` (fork orgs that get a preview without a label). Read from `main` when
+a workflow runs, like teams.yml, so a change applies at once with no caller bump. A failed read means
+no preview and no deploy. The public build env is `build/zedu-fe.env` (pinned with the workflow).
 
 ## teams.yml
 
