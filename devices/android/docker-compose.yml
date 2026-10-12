@@ -1,0 +1,82 @@
+# Android test slot for Coolify: the emulator slot (agent + emulator) behind a GitHub login. Set the service
+# domain to android.preview.groups.zedu.chat on the `auth` service (port 4180), and set these secrets:
+#   DEVICE_TOKEN          the agent's bearer token (the /test workflow uses it)
+#   KVM_GID               numeric group id of /dev/kvm on the box (`getent group kvm`); the emulator needs it
+#   GH_OAUTH_CLIENT_ID, GH_OAUTH_CLIENT_SECRET   a zedu-hng GitHub OAuth app whose callback is
+#                         https://android.preview.groups.zedu.chat/oauth2/callback (one callback host per app)
+#   OAUTH_COOKIE_SECRET   32 random bytes, base64 or hex (oauth2-proxy's session cookie)
+# See devices/README.md. Only `auth` is reachable from outside; the agent is behind it.
+services:
+  android-slot:
+    image: ghcr.io/zedu-hng/zedu-device-android:main
+    restart: always
+    read_only: true
+    expose:
+      - "8080"
+    devices:
+      - /dev/kvm:/dev/kvm
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      - /session:exec,nosuid,nodev,size=3g,mode=0755
+      - /home/device:size=512m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - KILL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: 6g
+    cpus: 3
+    cpu_shares: 128
+    oom_score_adj: 500
+    environment:
+      DEVICE_TOKEN: ${DEVICE_TOKEN:?set DEVICE_TOKEN}
+      TTL_SECONDS: ${TTL_SECONDS:-1800}
+      APP_GROUPS: ${KVM_GID:?set KVM_GID}
+
+  # GitHub login in front of the viewer. The session cookie is host-only (the __Host- prefix forbids a
+  # Domain attribute), so a PR-built preview on a sibling host cannot read or replace it. /api/ and
+  # /healthz skip the login: the agent checks the bearer token itself, and the /test workflow uses them.
+  auth:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916
+    restart: always
+    read_only: true
+    expose:
+      - "4180"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 128m
+    cpus: 0.5
+    depends_on:
+      - android-slot
+    environment:
+      OAUTH2_PROXY_PROVIDER: github
+      OAUTH2_PROXY_CLIENT_ID: ${GH_OAUTH_CLIENT_ID:?set GH_OAUTH_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${GH_OAUTH_CLIENT_SECRET:?set GH_OAUTH_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:?set OAUTH_COOKIE_SECRET}
+      OAUTH2_PROXY_GITHUB_ORG: ${GH_OAUTH_ORG:-zedu-hng}
+      OAUTH2_PROXY_GITHUB_TEAM: ${GH_OAUTH_TEAM:-reviewers}
+      OAUTH2_PROXY_SCOPE: user:email read:org
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_REDIRECT_URL: https://${PUBLIC_HOST:-android.preview.groups.zedu.chat}/oauth2/callback
+      OAUTH2_PROXY_UPSTREAMS: http://android-slot:8080
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      # Reverse-proxy mode would trust X-Forwarded-Uri when matching the skip-auth routes (CVE-2026-40575,
+      # fixed in 7.15.2 only with a trusted-proxy list), so a client could name /api/ and skip the login on
+      # any path. The redirect URL is set explicitly, so the proxy does not need forwarded headers.
+      OAUTH2_PROXY_REVERSE_PROXY: "false"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_SKIP_AUTH_ROUTES: ^/api/,^/healthz$
+      OAUTH2_PROXY_COOKIE_NAME: __Host-device-auth
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_HTTPONLY: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_EXPIRE: 2h
+      OAUTH2_PROXY_COOKIE_REFRESH: 0

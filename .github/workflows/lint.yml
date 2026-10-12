@@ -42,7 +42,7 @@ jobs:
 
       - name: Device slots
         run: |
-          shellcheck -S warning -x devices/firewall.sh devices/desktop/session.sh devices/desktop/keyring.sh
+          shellcheck -S warning -x devices/firewall.sh devices/desktop/session.sh devices/desktop/keyring.sh devices/android/session.sh
           python3 -m unittest discover -s devices/agent -v
 
       - name: Shared blocks match

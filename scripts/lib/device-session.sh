@@ -157,10 +157,18 @@ ds_main() {
   fi
 
   gh api "repos/$head_repo/actions/artifacts/$art_id/zip" > "$work/a.zip"
-  unzip -p "$work/a.zip" "$TARBALL" > "$work/app.tar.gz" 2> /dev/null || true
-  if [ ! -s "$work/app.tar.gz" ]; then
+  unzip -p "$work/a.zip" "$TARBALL" > "$work/payload" 2> /dev/null || true
+  if [ ! -s "$work/payload" ]; then
     echo "The artifact has no $TARBALL." | ds_comment
     return 0
+  fi
+  if [[ "$TARBALL" == *.apk ]]; then
+    # The slot unpacks a tarball. An APK goes in as app.apk.
+    mkdir "$work/pk"
+    mv "$work/payload" "$work/pk/app.apk"
+    tar -czf "$work/app.tar.gz" -C "$work/pk" app.apk
+  else
+    mv "$work/payload" "$work/app.tar.gz"
   fi
 
   code=$(slot "$out" -X PUT -H 'Expect:' --data-binary @"$work/app.tar.gz" \

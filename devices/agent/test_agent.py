@@ -90,6 +90,16 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
         finally:
             os.geteuid = real
 
+    async def test_the_app_user_gets_the_configured_groups(self):
+        real = os.geteuid
+        agent.CFG.update(app_uid=10001, app_gid=10001, app_groups=[993, 44])
+        try:
+            os.geteuid = lambda: 0
+            self.assertEqual(agent.app_user()["extra_groups"], [993, 44])
+        finally:
+            os.geteuid = real
+            agent.CFG["app_groups"] = []
+
     async def test_the_token_never_reaches_the_app(self):
         stub = agent.CFG["session_cmd"]
         with open(stub, "w") as f:

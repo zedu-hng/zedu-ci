@@ -1,6 +1,7 @@
 # Re-applies the device slots' firewall rules at boot. The rules live in kernel memory, so without this a
 # reboot removes them and the slot network is open again, silently. Install steps: devices/README.md.
-# /etc/default/devices-firewall holds NETWORK=<the slot service's Docker network> and HOST_IP=<public ip>.
+# /etc/default/devices-firewall holds NETWORK=<the slot services' Docker networks, space separated> and
+# HOST_IP=<public ip>.
 # The script is idempotent. It waits for Docker (it reads the network's subnet and uses its DOCKER-USER
 # chain) and retries until the network exists, because Docker brings the stack back after the unit starts.
 [Unit]
