@@ -259,7 +259,7 @@ jobs:
           [ -e /dev/kvm ] || { echo "::warning::No /dev/kvm here; skipping the emulator boot."; exit 0; }
           adb_in() { docker exec -u 10001 -e HOME=/home/device slot "$@"; }
           docker run -d --name slot -p 18081:8080 --memory 7g --cpus 3 \
-            --read-only --tmpfs /tmp:size=512m,mode=1777 --tmpfs /session:exec,nosuid,nodev,size=4g,mode=0755 \
+            --read-only --tmpfs /tmp:size=512m,mode=1777 --tmpfs /session:exec,nosuid,nodev,size=5g,mode=0755 \
             --tmpfs /home/device:size=512m,uid=10001,gid=10001,mode=0700 \
             --device /dev/kvm -e APP_GROUPS="$(stat -c %g /dev/kvm)" \
             --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \

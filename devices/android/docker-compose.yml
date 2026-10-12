@@ -17,7 +17,7 @@ services:
       - /dev/kvm:/dev/kvm
     tmpfs:
       - /tmp:size=512m,mode=1777
-      - /session:exec,nosuid,nodev,size=4g,mode=0755
+      - /session:exec,nosuid,nodev,size=5g,mode=0755
       - /home/device:size=512m,uid=10001,gid=10001,mode=0700
     cap_drop:
       - ALL

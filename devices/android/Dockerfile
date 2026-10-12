@@ -28,7 +28,8 @@ RUN curl -fsSL -o /tmp/cmdtools.zip "https://dl.google.com/android/repository/${
  && rm /tmp/cmdtools.zip
 ENV PATH="${PATH}:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
 
-# The emulator and an Android 14 system image, and one baked AVD. Each session copies the AVD into its
+# The emulator and an Android 14 system image, and one baked AVD. The data partition is 2 GB: the emulator
+# wants 1.8 times that free in the session's tmpfs before it creates it. Each session copies the AVD into its
 # tmpfs and runs that copy, so every session starts from the same clean device.
 ARG SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
 RUN yes | sdkmanager --licenses > /dev/null \
@@ -41,7 +42,7 @@ p = os.path.join(os.environ["ANDROID_AVD_HOME"], "slot.avd", "config.ini")
 want = {
     "hw.ramSize": "3072", "hw.lcd.width": "720", "hw.lcd.height": "1280", "hw.lcd.density": "320",
     "hw.gpu.enabled": "yes", "hw.gpu.mode": "swiftshader_indirect", "hw.keyboard": "yes",
-    "hw.audioInput": "no", "hw.audioOutput": "no", "showDeviceFrame": "no", "disk.dataPartition.size": "4G",
+    "hw.audioInput": "no", "hw.audioOutput": "no", "showDeviceFrame": "no", "disk.dataPartition.size": "2G",
     "fastboot.forceColdBoot": "yes",
 }
 lines = [l for l in open(p).read().splitlines() if l.split("=")[0].strip() not in want]
