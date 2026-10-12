@@ -160,6 +160,25 @@ jobs:
             echo "$hdr" | grep -qi '^location: https://github.com/login/oauth/authorize' || { echo "$path does not go to GitHub:"; echo "$hdr"; exit 1; }
           done
 
+          # The two known skip-auth bypasses: a spoofed X-Forwarded-Uri naming a skipped route
+          # (CVE-2026-40575), and a skipped route in the query string (CVE-2025-54576).
+          expect_login() { # what, then curl arguments
+            local what=$1 hdr
+            shift
+            hdr=$(curl -s -D - -o /dev/null "$@" | tr -d '\r')
+            if ! head -1 <<< "$hdr" | grep -q ' 302 ' || ! grep -qi '^location: https://github.com/login' <<< "$hdr"; then
+              echo "$what skipped the login:"
+              head -4 <<< "$hdr"
+              exit 1
+            fi
+          }
+          expect_login "X-Forwarded-Uri on /s/" -H 'X-Forwarded-Uri: /api/status' "$base/s/anything"
+          expect_login "X-Forwarded-Uri on /vnc.html" -H 'X-Forwarded-Uri: /healthz' "$base/vnc.html"
+          expect_login "X-Forwarded-Path on /vnc.html" -H 'X-Forwarded-Path: /api/status' "$base/vnc.html"
+          expect_login "an /api/ query on /vnc.html" "$base/vnc.html?x=/api/status"
+          expect_login "a /healthz query on /vnc.html" "$base/vnc.html?x=/healthz"
+          expect_login "an /api/ query on /s/" "$base/s/anything?next=/api/"
+
           # The login cookie is host-only: __Host- prefix, Secure, and no Domain attribute.
           cookies=$(curl -s -D - -o /dev/null "$base/" | tr -d '\r' | grep -i '^set-cookie:')
           echo "$cookies" | grep -qi '__Host-device-auth' || { echo "no __Host- cookie: $cookies"; exit 1; }
