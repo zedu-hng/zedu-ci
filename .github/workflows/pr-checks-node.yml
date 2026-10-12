@@ -92,6 +92,8 @@ jobs:
       # alone. Repos without previews are always full.
       - name: Decide
         id: mode
+        env:
+          PREVIEW: ${{ inputs.preview }}
         run: |
           bline() {
             local l
@@ -100,9 +102,9 @@ jobs:
             echo "line:$(sed -E 's/^[[:space:]]*[Bb][Aa][Cc][Kk][Ee][Nn][Dd] [Uu][Rr][Ll]:[[:space:]]*//; s/[[:space:]`<>]//g; s#/+$##' <<< "$l")"
           }
           mode=full
-          if [ "${{ inputs.preview }}" = true ]; then
+          if [ "$PREVIEW" = true ]; then
             case "$ACTION" in
-              labeled) mode=preview ;;
+              labeled) if [ "$LABEL" = preview ]; then mode=preview; else mode=none; fi ;;
               edited) if [ "$(bline "$BODY_FROM")" = "$(bline "$PR_BODY")" ]; then mode=none; else mode=preview; fi ;;
             esac
           fi

@@ -295,12 +295,12 @@ PCN=.github/workflows/pr-checks-node.yml
 d=$(mktemp -d)
 step() { ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts y["jobs"]["checks"]["steps"].find { |s| s["name"] == ARGV[1] }["run"]' "$PCN" "$2" > "$d/$1.sh"; }
 step decide Decide; step rec "Record results"
-sed -i.bak 's/\${{ inputs.preview }}/$PREVIEW/' "$d/decide.sh"
-decide() { # preview action body-from body
-  (cd "$d" && : > out; : > genv; PREVIEW=$1 ACTION=$2 BODY_FROM=$3 PR_BODY=$4 GITHUB_OUTPUT="$PWD/out" GITHUB_ENV="$PWD/genv" bash decide.sh >/dev/null && cat out genv | tr '\n' ' ')
+decide() { # preview action body-from body [label]
+  (cd "$d" && : > out; : > genv; PREVIEW=$1 ACTION=$2 BODY_FROM=$3 PR_BODY=$4 LABEL=${5:-preview} GITHUB_OUTPUT="$PWD/out" GITHUB_ENV="$PWD/genv" bash decide.sh >/dev/null && cat out genv | tr '\n' ' ')
 }
 check "pr-checks-node: a push is a full run" "mode=full " "$(decide true synchronize '' '')"
 check "pr-checks-node: a preview label rebuilds only the preview" "mode=preview SKIP_PUBLISH=true " "$(decide true labeled '' '')"
+check "pr-checks-node: an unrelated label does nothing" "mode=none SKIP_PUBLISH=true " "$(decide true labeled '' '' bug)"
 check "pr-checks-node: a Backend URL edit rebuilds only the preview" "mode=preview SKIP_PUBLISH=true " "$(decide true edited 'Backend URL: https://api.a.groups.zedu.chat' 'Backend URL: https://api.b.groups.zedu.chat')"
 check "pr-checks-node: any other body edit does nothing" "mode=none SKIP_PUBLISH=true " "$(decide true edited 'x' 'y')"
 check "pr-checks-node: a repo without previews is always full" "mode=full " "$(decide false labeled '' '')"
