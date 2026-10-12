@@ -289,13 +289,15 @@ async def start_session(query, headers, reader, writer):
         writer.write(json_resp(422, {"error": f"bad artifact: {e}"}))
         return
     os.remove(archive)
-    hand_over(CFG["work"])
     binary = os.path.join(appdir, CFG["app_bin"])
     if not os.path.isfile(binary):
         shutil.rmtree(CFG["work"], ignore_errors=True)
         writer.write(json_resp(422, {"error": f"{CFG['app_bin']} not found in the artifact"}))
         return
     os.chmod(binary, 0o755)
+    # Last, and nothing here touches the tree afterwards: the root agent has no DAC_OVERRIDE, so it
+    # cannot read what it hands over. The tmpfs goes away when the container restarts after the session.
+    hand_over(CFG["work"])
     env = dict(os.environ, APP_DIR=appdir, APP_BIN=CFG["app_bin"], UPSTREAM_PORT=str(CFG["upstream_port"]),
                HOME="/home/device", USER="device")
     env.pop("DEVICE_TOKEN", None)
