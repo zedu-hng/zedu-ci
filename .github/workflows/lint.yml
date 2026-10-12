@@ -40,6 +40,11 @@ jobs:
           shellcheck -x -P SCRIPTDIR/.. scripts/*.sh scripts/lib/*.sh
           bash scripts/test.sh
 
+      - name: Device slots
+        run: |
+          shellcheck -S warning devices/firewall.sh devices/desktop/session.sh
+          python3 -m unittest discover -s devices/agent -v
+
       - name: Shared blocks match
         run: ruby scripts/check-shared-blocks.rb
 

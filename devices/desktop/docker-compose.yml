@@ -1,0 +1,28 @@
+# Desktop test slot for Coolify. Deploy it on the `devices` destination (see devices/README.md), set the
+# domain to desktop.preview.groups.zedu.chat (port 8080), and set DEVICE_TOKEN as a secret.
+services:
+  desktop-slot:
+    image: ghcr.io/zedu-hng/zedu-device-desktop:main
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+      - /session:exec,nosuid,nodev,size=1g,mode=0755
+      - /home/device:size=512m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - KILL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    cpu_shares: 128
+    oom_score_adj: 500
+    environment:
+      DEVICE_TOKEN: ${DEVICE_TOKEN:?set DEVICE_TOKEN}
+      TTL_SECONDS: ${TTL_SECONDS:-1800}

@@ -1,0 +1,128 @@
+name: Device images
+
+# Builds the device-streaming slot images (devices/), smoke-tests them, and publishes them to GHCR from
+# main. The desktop slot runs the Linux build of zedu-desktop under a virtual display for one reviewer
+# session at a time; see devices/README.md. Coolify pulls ghcr.io/zedu-hng/zedu-device-desktop:main.
+#
+# The smoke test starts the image with the production container flags, uploads a stub app and walks
+# the viewer link, so a broken display stack, a missing library or a bad agent fails here, not on the box.
+
+on:
+  pull_request:
+    paths:
+      - devices/**
+      - .github/workflows/device-images.yml
+  push:
+    branches:
+      - main
+    paths:
+      - devices/**
+      - .github/workflows/device-images.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop slot image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/zedu-hng/zedu-device-desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: docker build -f devices/desktop/Dockerfile -t zedu-device-desktop:test .
+
+      - name: Libraries and tools are present
+        run: |
+          docker run --rm --entrypoint bash zedu-device-desktop:test -c '
+            missing=0
+            for lib in $(grep -v "^#" /opt/agent/needed-libs.txt); do
+              ldconfig -p | grep -q "$lib" || { echo "missing library: $lib"; missing=1; }
+            done
+            for bin in Xtigervnc websockify openbox dbus-launch gnome-keyring-daemon python3 tini; do
+              command -v "$bin" > /dev/null || { echo "missing tool: $bin"; missing=1; }
+            done
+            exit "$missing"'
+
+      - name: Session runs end to end
+        run: |
+          trap 'docker logs slot 2>&1 | tail -40; docker rm -f slot > /dev/null 2>&1' EXIT
+          docker run -d --name slot -p 18080:8080 \
+            --read-only --tmpfs /tmp:size=256m,mode=1777 --tmpfs /session:exec,nosuid,nodev,size=1g,mode=0755 --tmpfs /home/device:size=512m,uid=10001,gid=10001,mode=0700 \
+            --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+            --security-opt no-new-privileges:true --pids-limit 512 \
+            -e DEVICE_TOKEN=smoke -e TTL_SECONDS=120 zedu-device-desktop:test > /dev/null
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz > /dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18080/healthz | grep -qx ok
+
+          # The stub app reports who it runs as and whether it can see the agent's token in /proc.
+          mkdir art && cat > art/zedu <<'APP'
+          #!/bin/sh
+          id -u > /tmp/app-report
+          cat /proc/[0-9]*/environ 2>/dev/null | tr '\0' '\n' | grep -c '^DEVICE_TOKEN=' >> /tmp/app-report
+          exec sleep 300
+          APP
+          chmod +x art/zedu
+          tar -czf art.tar.gz -C art zedu
+          resp=$(curl -sS -X PUT -H 'Authorization: Bearer smoke' -H 'Expect:' --data-binary @art.tar.gz \
+            'http://127.0.0.1:18080/api/session?pr=1&sha=smoke&who=ci')
+          path=$(jq -r .path <<< "$resp")
+          case "$path" in /s/*) ;; *) echo "No viewer path in: $resp"; exit 1 ;; esac
+
+          # The link sets the host-only cookie; the viewer needs it.
+          cookie=$(curl -sS -D - -o /dev/null "http://127.0.0.1:18080$path" | tr -d '\r' | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p')
+          [ -n "$cookie" ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/vnc.html)" = 403 ]
+          if ! curl -sS -H "Cookie: $cookie" http://127.0.0.1:18080/vnc.html -o vnc.out -D vnc.hdr || ! grep -qi novnc vnc.out; then
+            echo "The viewer did not answer with noVNC:"; cat vnc.hdr; head -c 500 vnc.out
+            docker exec slot sh -c 'tail -n 30 /tmp/*.log'
+            exit 1
+          fi
+
+          # The interactive stream: a WebSocket upgrade through the agent reaches the VNC server.
+          curl -sS --http1.1 --max-time 4 -i -N -o ws.out \
+            -H "Cookie: $cookie" -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            -H 'Sec-WebSocket-Protocol: binary' http://127.0.0.1:18080/websockify || true
+          if ! head -1 ws.out | grep -q ' 101 ' || ! grep -aq 'RFB 003' ws.out; then
+            echo "No VNC handshake through the WebSocket:"; head -c 600 ws.out | cat -v
+            exit 1
+          fi
+
+          # The app runs as the unprivileged user and cannot read the agent's token.
+          sleep 2
+          [ "$(docker exec slot cat /tmp/app-report | tr '\n' ' ')" = "10001 0 " ]
+
+          # A second session is refused while this one runs, and DELETE frees the slot.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Authorization: Bearer smoke' -H 'Expect:' \
+            --data-binary @art.tar.gz 'http://127.0.0.1:18080/api/session?pr=2')" = 409 ]
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H 'Authorization: Bearer smoke' http://127.0.0.1:18080/api/session || true)
+          [ "$code" = 200 ] || { echo "DELETE answered '$code'"; exit 1; }
+          sleep 3
+          # The process exits after a session so Docker restarts it clean.
+          [ "$(docker inspect slot --format '{{.State.Running}}')" = false ]
+
+      - name: Publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          for tag in main "${GITHUB_SHA::12}"; do
+            docker tag zedu-device-desktop:test "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
