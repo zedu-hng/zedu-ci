@@ -290,4 +290,25 @@ check "pr-scans: failed Semgrep still posts a row" "Semgrep,ClamAV,Obfuscation s
 check "pr-scans: Semgrep step is skipped when unconfigured" "1" "$(grep -c "if: inputs.semgrep_configs != '' && inputs.semgrep_paths != ''" "$PRS")"
 rm -rf "$d"
 
+# pr-checks-node: previews. Run the real "Decide" and "Record results" steps, and publish-results.sh.
+PCN=.github/workflows/pr-checks-node.yml
+d=$(mktemp -d)
+step() { ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts y["jobs"]["checks"]["steps"].find { |s| s["name"] == ARGV[1] }["run"]' "$PCN" "$2" > "$d/$1.sh"; }
+step decide Decide; step rec "Record results"
+decide() { # preview action body-from body [label]
+  (cd "$d" && : > out; : > genv; PREVIEW=$1 ACTION=$2 BODY_FROM=$3 PR_BODY=$4 LABEL=${5:-preview} GITHUB_OUTPUT="$PWD/out" GITHUB_ENV="$PWD/genv" bash decide.sh >/dev/null && cat out genv | tr '\n' ' ')
+}
+check "pr-checks-node: a push is a full run" "mode=full " "$(decide true synchronize '' '')"
+check "pr-checks-node: a preview label rebuilds only the preview" "mode=preview SKIP_PUBLISH=true " "$(decide true labeled '' '')"
+check "pr-checks-node: an unrelated label does nothing" "mode=none SKIP_PUBLISH=true " "$(decide true labeled '' '' bug)"
+check "pr-checks-node: a Backend URL edit rebuilds only the preview" "mode=preview SKIP_PUBLISH=true " "$(decide true edited 'Backend URL: https://api.a.groups.zedu.chat' 'Backend URL: https://api.b.groups.zedu.chat')"
+check "pr-checks-node: any other body edit does nothing" "mode=none SKIP_PUBLISH=true " "$(decide true edited 'x' 'y')"
+check "pr-checks-node: a repo without previews is always full" "mode=full " "$(decide false labeled '' '')"
+recb() { (cd "$d" && JEST_ENABLED=false BUILD_ENABLED=$1 INSTALL=success FILE_POLICY=success GITLEAKS=success HEURISTICS=success COMMITLINT=success AUDIT=success PRETTIER=success ESLINT=success TYPES=success REVIEW=success BUILD=$2 bash rec.sh && cut -f1,2 results.tsv | tail -1 | tr '\t' ' '); }
+check "pr-checks-node: no Build row without a build" "PR review success" "$(recb false skipped)"
+check "pr-checks-node: a failed build posts a failed Build row" "Build failure" "$(recb true failure)"
+(cd "$d" && : > env2 && printf 'x\ty\tz\n' > results.tsv && GITHUB_ENV="$PWD/env2" SKIP_PUBLISH=true bash "$OLDPWD/scripts/publish-results.sh")
+check "pr-checks-node: SKIP_PUBLISH posts nothing" "fail=0 no-json" "$(tr '\n' ' ' < "$d/env2")$([ -f "$d/pr-checks-results.json" ] || echo no-json)"
+rm -rf "$d"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
