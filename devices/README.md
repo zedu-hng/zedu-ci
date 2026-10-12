@@ -67,11 +67,28 @@ container (production flags, stub app, viewer link, cookie, busy slot) and publi
    a wildcard cert.
 3. Apply the egress rules with the service's network name:
    `sudo devices/firewall.sh <service network> <box public ip> --dry-run`, read the output, then run it
-   without `--dry-run`. Persist them with `netfilter-persistent save`; re-running the script after a
-   reboot rebuilds them. Slots may reach the internet (web ports and DNS) and the box's own 80 and 443
+   without `--dry-run`. Slots may reach the internet (web ports and DNS) and the box's own 80 and 443
    (team backends sit behind Traefik), and the login proxy and agent ports inside their own network.
    Nothing else.
-4. First run by hand (replace `<artifact>` with a downloaded `desktop-linux` bundle):
+4. **Make the rules survive a reboot.** They live in kernel memory: after a reboot the slot network is
+   open again, silently. Install the systemd unit, which re-runs the script after Docker starts:
+
+   ```bash
+   sudo curl -fsSL https://raw.githubusercontent.com/zedu-hng/zedu-ci/main/devices/firewall.sh \
+     -o /usr/local/sbin/devices-firewall.sh && sudo chmod 755 /usr/local/sbin/devices-firewall.sh
+   printf 'NETWORK=<service network>\nHOST_IP=<box public ip>\n' | sudo tee /etc/default/devices-firewall
+   sudo curl -fsSL https://raw.githubusercontent.com/zedu-hng/zedu-ci/main/devices/systemd/devices-firewall.service \
+     -o /etc/systemd/system/devices-firewall.service
+   sudo systemctl daemon-reload && sudo systemctl enable --now devices-firewall.service
+   ```
+
+   Do not use `iptables-persistent` for this: it saves Docker's own chains too, and restoring them at
+   boot can duplicate Docker's rules. The script is idempotent, so the unit and a manual run agree.
+   If the slot service is recreated with a new network, update `NETWORK` and restart the unit.
+   Check at any time (exit code 0 when in place, and it names what is missing otherwise):
+   `sudo /usr/local/sbin/devices-firewall.sh <service network> <box public ip> --check`.
+
+5. First run by hand (replace `<artifact>` with a downloaded `desktop-linux` bundle):
 
    ```bash
    curl -fsS -X PUT -H "Authorization: Bearer $DEVICE_TOKEN" -H 'Expect:' \
