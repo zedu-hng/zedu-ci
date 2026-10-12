@@ -10,7 +10,8 @@ upstream=${UPSTREAM_PORT:-6080}
 export DISPLAY=:1 HOME=${HOME:-/home/device} XDG_RUNTIME_DIR=/tmp/xdg
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 # Software rendering: the box has no GPU.
-export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11 NO_AT_BRIDGE=1
+# llvmpipe starts one render thread per host core by default; the container is capped at 2 CPUs.
+export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe LP_NUM_THREADS=2 GDK_BACKEND=x11 NO_AT_BRIDGE=1
 
 cleanup() { jobs -p | xargs -r kill 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT
@@ -23,7 +24,8 @@ for _ in $(seq 1 40); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.25; done
 
 # flutter_secure_storage needs a Secret Service on the session bus.
 eval "$(dbus-launch --sh-syntax)"
-eval "$(echo -n '' | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)" || true
+# shellcheck source=keyring.sh
+. /opt/agent/keyring.sh
 
 openbox >/tmp/openbox.log 2>&1 &
 websockify --web /usr/share/novnc "127.0.0.1:$upstream" localhost:5901 >/tmp/websockify.log 2>&1 &
