@@ -332,9 +332,19 @@ jobs:
               echo "::error::Couldn't read the PR template (API error). Re-run this job."
               report "PR template" failure "Couldn't read the template (API error); re-run PR rules"
             else
-              norm() { tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' '; }
+              # Lower-case, drop backticks, squeeze spaces. Backticks are dropped so a team can add
+              # or remove code formatting in the body without breaking the match.
+              norm() { tr '[:upper:]' '[:lower:]' | tr -d '\140' | tr -s '[:space:]' ' '; }
               body_norm=$(printf '%s' "$BODY" | norm)
-              ticked() { printf '%s\n' "$body_norm" | grep -qF "[x] $1"; }
+              # A label matches a ticked line either verbatim, or on its stable prefix: the text up
+              # to the first placeholder (<...>) or parenthetical, so a team may adapt a path or add
+              # wording after it without being counted unticked. $1 is the haystack, $2 a norm'd label.
+              match_ticked() {
+                local key
+                printf '%s\n' "$1" | grep -qF "[x] $2" && return 0
+                key=$(printf '%s' "$2" | sed -E 's/[<(].*$//; s/[[:space:]]+$//')
+                [ -n "$key" ] && printf '%s\n' "$1" | grep -qF "[x] $key"
+              }
               missing=""; n=0
               # A run of checkbox lines wrapped in <!-- choice --> ... <!-- /choice --> holds
               # alternatives (the change types, the mutually exclusive Yes/No answers): exactly one
@@ -356,8 +366,8 @@ jobs:
                   label_norm=$(printf '%s' "$label" | norm)
                   [ -n "$label_norm" ] || continue
                   if [ -n "$scope" ]; then
-                    if printf '%s\n' "$scope" | grep -qF "[x] $label_norm"; then hit=true; break; fi
-                  elif ticked "$label_norm"; then
+                    if match_ticked "$scope" "$label_norm"; then hit=true; break; fi
+                  elif match_ticked "$body_norm" "$label_norm"; then
                     hit=true; break
                   fi
                 done <<< "$choice_labels"
@@ -381,7 +391,7 @@ jobs:
                 else
                   label_norm=$(printf '%s' "$label" | norm)
                   [ -n "$label_norm" ] || continue
-                  if ! ticked "$label_norm"; then
+                  if ! match_ticked "$body_norm" "$label_norm"; then
                     missing="${missing}  - ${label}"$'\n'; n=$((n + 1))
                   fi
                 fi
