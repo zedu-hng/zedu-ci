@@ -1,0 +1,32 @@
+name: Token test (temporary)
+
+# Throwaway: can this workflow's own GITHUB_TOKEN read and download another repo's (a public fork's) build
+# artifacts? The /test command depends on it. Permissions mirror the device-session job. Not for merging.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: List and download a fork's artifacts with the workflow token
+        run: |
+          set -x
+          gh api repos/logickoder/zedu-desktop/actions/runs/37606675853/artifacts --jq '.artifacts[]|"\(.id) \(.name) \(.size_in_bytes)"'
+          time gh api repos/logickoder/zedu-desktop/actions/artifacts/11474364771/zip > desktop.zip
+          ls -l desktop.zip
+          unzip -l desktop.zip | tail -3
+          time gh api repos/logickoder/zedu-mobile/actions/artifacts/11476840677/zip > android.zip
+          ls -l android.zip
+          unzip -l android.zip | tail -3
