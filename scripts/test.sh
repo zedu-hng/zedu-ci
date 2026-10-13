@@ -442,4 +442,65 @@ check "firewall unit: enabled at boot" "1" "$(grep -c '^WantedBy=multi-user.targ
 unset -f fw
 rm -rf "$FW_DIR"
 
+# pr-rules: the real "Check rules" script against a stub gh. Everything is enforced by default; each
+# enforce_* switch turns one rule into a "Not enforced" success, and the status is still posted.
+PRT=$(mktemp -d)
+mkdir -p "$PRT/bin" "$PRT/.zedu-ci/scripts/lib"
+cp scripts/lib/status.sh "$PRT/.zedu-ci/scripts/lib/status.sh"
+ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts y["jobs"]["rules"]["steps"].find { |s| s["name"] == "Check rules" }["run"]' .github/workflows/pr-rules.yml > "$PRT/rules.sh"
+cat > "$PRT/bin/gh" << 'GHSTUB'
+#!/usr/bin/env bash
+case "$*" in
+  "api repos/o/r --jq "*) echo "" ;;
+  "api repos/o/r/collaborators/"*"/permission --jq .permission") echo "${PERM:-read}" ;;
+  "api --paginate repos/o/r/pulls/7/commits --jq "*) printf '%s\n' "$COMMIT_AUTHORS" ;;
+  "api --paginate repos/o/r/pulls/7/files --jq "*) printf '%b' "$FILES" ;;
+  "api repos/o/r/commits/"*"/status --jq "*) ;;
+  "api repos/o/r/contents/"*) printf '%s' '- [ ] I read it' | base64 ;;
+  "api repos/o/r/statuses/"*)
+    ctx=""; st=""; desc=""
+    while [ $# -gt 0 ]; do
+      case "$1" in -f) kv=$2; shift; case "$kv" in context=*) ctx=${kv#context=} ;; state=*) st=${kv#state=} ;; description=*) desc=${kv#description=} ;; esac ;; esac
+      shift
+    done
+    echo "$ctx|$st|$desc" >> "$STATUS_LOG" ;;
+  *) echo "unexpected gh: $*" >&2; exit 1 ;;
+esac
+GHSTUB
+chmod +x "$PRT/bin/gh"
+prr() { # env assignments that override the defaults; prints "context|state|description" per posted status
+  : > "$PRT/log"
+  (cd "$PRT" && env PATH="$PRT/bin:$PATH" STATUS_LOG="$PRT/log" GH_TOKEN=x REPO=o/r PR_NUMBER=7 HEAD_REPO=fork/r \
+    HEAD_REF=fix/12-x AUTHOR=intern LABELS="" ACTION=opened LABEL="" TITLE_CHANGED=false BODY_CHANGED=false \
+    BASE_CHANGED=false SHA=aaaa BASE_REF=dev TITLE="fix(X-12): a thing" BODY="- [x] i read it" PROTECTED='^\.github/' \
+    SIZE_EXCLUDE='lock$' SIZE_LIMIT=400 TEMPLATE=.github/t.md RUN_URL=u ENFORCE_SINGLE_AUTHOR=true \
+    ENFORCE_BRANCH_NAME=true ENFORCE_SIZE=true COMMIT_AUTHORS=alice 'FILES=10\tmodified\tsrc/a.ts\n' \
+    "$@" bash rules.sh > /dev/null 2>&1)
+  sort "$PRT/log"
+}
+st() { grep "^$2|" <<< "$1" | head -1 | cut -d'|' -f2; } # st <log> <context> -> state
+BAD=(COMMIT_AUTHORS=$'alice\nbob' HEAD_REF=consolidated-sprint-3 'TITLE=fix(X-9): a thing' 'FILES=900\tmodified\tsrc/a.ts\n')
+out=$(prr)
+check "pr-rules: a clean one-person PR posts every rule green" "0" "$(grep -c '|failure|' <<< "$out")"
+check "pr-rules: all six rules post a status" "6" "$(grep -c -E '^(Branch name|Single author|Protected files|Size|PR title|PR template)\|' <<< "$out")"
+out=$(prr "${BAD[@]}")
+check "pr-rules: by default several authors fail Single author" "failure" "$(st "$out" 'Single author')"
+check "pr-rules: by default a free-form branch fails Branch name" "failure" "$(st "$out" 'Branch name')"
+check "pr-rules: by default 900 lines fail Size" "failure" "$(st "$out" 'Size')"
+check "pr-rules: by default a title that does not match the branch fails PR title" "failure" "$(st "$out" 'PR title')"
+out=$(prr "${BAD[@]}" ENFORCE_SINGLE_AUTHOR=false)
+check "pr-rules: enforce_single_author=false passes Single author, says so" "success|Not enforced: a PR may combine a team's work" "$(grep '^Single author|' <<< "$out" | cut -d'|' -f2,3)"
+check "pr-rules: ...and leaves Branch name and Size enforced" "failure failure" "$(st "$out" 'Branch name') $(st "$out" 'Size')"
+out=$(prr "${BAD[@]}" ENFORCE_SIZE=false)
+check "pr-rules: enforce_size=false passes Size, says so" "success|Not enforced" "$(grep '^Size|' <<< "$out" | cut -d'|' -f2,3)"
+check "pr-rules: ...and leaves Single author and Branch name enforced" "failure failure" "$(st "$out" 'Single author') $(st "$out" 'Branch name')"
+out=$(prr "${BAD[@]}" ENFORCE_BRANCH_NAME=false)
+check "pr-rules: enforce_branch_name=false passes Branch name, says so" "success|Not enforced" "$(grep '^Branch name|' <<< "$out" | cut -d'|' -f2,3)"
+check "pr-rules: ...and stops comparing the title with the branch" "success" "$(st "$out" 'PR title')"
+check "pr-rules: ...but still checks the title format" "failure" "$(st "$(prr "${BAD[@]}" ENFORCE_BRANCH_NAME=false 'TITLE=consolidated work')" 'PR title')"
+out=$(prr "${BAD[@]}" ENFORCE_SINGLE_AUTHOR=false ENFORCE_BRANCH_NAME=false ENFORCE_SIZE=false)
+check "pr-rules: with all three off a consolidated PR has no failure" "0" "$(grep -c '|failure|' <<< "$out")"
+check "pr-rules: all three still post their status, so required checks keep reporting" "3" "$(grep -c -E '^(Branch name|Single author|Size)\|success\|Not enforced' <<< "$out")"
+rm -rf "$PRT"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }

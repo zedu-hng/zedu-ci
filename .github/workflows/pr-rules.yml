@@ -15,6 +15,11 @@ name: PR rules
 # - PR title: <type>(<ticket-id>): <summary>, with the ticket and the conventional type matching the
 #   branch (a feat/ branch must be feat(...), not chore(...)).
 # - PR template: every checkbox in the caller's `template` (read from the base branch) must be ticked.
+# Three rules can be switched off per repo with the `enforce_*` inputs (all default to on): Single author,
+# Branch name and Size. A switched-off rule still posts its status, as success ("Not enforced"), so a
+# required status check keeps reporting. Switching Branch name off also stops PR title from comparing
+# the title's type and ticket to the branch (the format `<type>(<ticket-id>): <summary>` still applies).
+# To bring a rule back, set its input to true, or delete the line, in the repo's caller.
 # Sync and promotion PRs (label `sync`, head dev/central-staging or upstream main/staging) are
 # waived here. Hotfix PRs (label `hotfix`) skip only size; branch/author/protected still run.
 #
@@ -39,6 +44,18 @@ on:
         description: Changed-line limit for Size
         type: number
         default: 400
+      enforce_single_author:
+        description: Fail a PR with commits from more than one person. Off posts Single author as success.
+        type: boolean
+        default: true
+      enforce_branch_name:
+        description: Fail a branch that is not <type>/<ticket-id>-<description>, and a title that does not match it. Off posts Branch name as success.
+        type: boolean
+        default: true
+      enforce_size:
+        description: Fail a PR over size_limit changed lines. Off posts Size as success.
+        type: boolean
+        default: true
       template:
         description: Path of the PR template on the base branch
         type: string
@@ -84,6 +101,9 @@ jobs:
       PROTECTED: ${{ inputs.protected }}
       SIZE_EXCLUDE: ${{ inputs.size_exclude }}
       SIZE_LIMIT: ${{ inputs.size_limit }}
+      ENFORCE_SINGLE_AUTHOR: ${{ inputs.enforce_single_author }}
+      ENFORCE_BRANCH_NAME: ${{ inputs.enforce_branch_name }}
+      ENFORCE_SIZE: ${{ inputs.enforce_size }}
       TEMPLATE: ${{ inputs.template }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -171,6 +191,7 @@ jobs:
           if wants branch; then
             pattern='^(feat|fix|hotfix|test|docs|refactor|chore|perf|security)/([A-Za-z]+-)?[[:digit:]]+-[a-z[:digit:]][a-z[:digit:]-]*$'
             if [ "$sync" = true ]; then waived "Branch name"
+            elif [ "$ENFORCE_BRANCH_NAME" != true ]; then report "Branch name" success "Not enforced"
             elif [[ "$HEAD_REF" =~ $pattern ]]; then report "Branch name" success "OK: $HEAD_REF"
             elif [ "$reviewer" = true ]; then report "Branch name" success "Not the ticket format; allowed for a reviewer"
             else
@@ -181,6 +202,7 @@ jobs:
 
           if wants author; then
             if [ "$sync" = true ]; then waived "Single author"
+            elif [ "$ENFORCE_SINGLE_AUTHOR" != true ]; then report "Single author" success "Not enforced: a PR may combine a team's work"
             elif ! raw=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits" \
                    --jq '.[] | (.author.login // .commit.author.email)'); then
               echo "::error::Couldn't read the PR's commits (API error). Re-run this job."
@@ -205,7 +227,7 @@ jobs:
           # Protected files and Size share one file list: "<changes>\t<status>\t<path>". A rename also
           # lists its old path with status "previous", so moving a protected file away still counts.
           files=""
-          if { wants protected || wants size; } && [ "$sync" != true ]; then
+          if { wants protected || { wants size && [ "$ENFORCE_SIZE" = true ]; }; } && [ "$sync" != true ]; then
             files=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
               --jq '.[] | "\(.additions + .deletions)\t\(.status)\t\(.filename)", (select(.status == "renamed") | "0\tprevious\t\(.previous_filename)")') \
               || files=ERROR
@@ -245,6 +267,7 @@ jobs:
 
           if wants size; then
             if [ "$sync" = true ]; then waived "Size"
+            elif [ "$ENFORCE_SIZE" != true ]; then report "Size" success "Not enforced"
             elif has hotfix; then report "Size" success "Hotfix PR; size check waived"
             elif has size-override; then report "Size" success "size-override label applied"
             elif [ "$files" = TOO_MANY ]; then report "Size" failure "3,000+ files changed. Split the PR"
@@ -277,6 +300,8 @@ jobs:
               fi
             else
               ttype="${BASH_REMATCH[1]}"; tnum="${BASH_REMATCH[3]}"
+              # Branch names are free-form when Branch name is off: there is nothing to compare to.
+              if [ "$ENFORCE_BRANCH_NAME" != true ]; then bnum=""; btype=""; fi
               # A conventional branch type must be the same conventional type in the title, so a
               # feat/ branch can't land as a chore(...) commit. Branch types without a conventional
               # equivalent (hotfix, security) are not compared. Reviewers are exempt, like the rest.
@@ -289,6 +314,7 @@ jobs:
               if [ "$type_ok" != true ]; then
                 echo "::error::PR title type '$ttype' doesn't match the branch type '$btype'. A '$btype/...' branch must use '$btype(...): ...'."
                 report "PR title" failure "Title type $ttype doesn't match branch type $btype"
+              elif [ "$ENFORCE_BRANCH_NAME" != true ]; then report "PR title" success "OK: type $ttype (branch name not enforced, so not compared)"
               elif [ -z "$bnum" ]; then report "PR title" success "OK: type $ttype (branch has no ticket number to match)"
               elif [ "$bnum" = "$tnum" ]; then report "PR title" success "OK: type $ttype, ticket $tnum matches the branch"
               elif [ "$reviewer" = true ]; then report "PR title" success "Ticket $tnum doesn't match branch $bnum; allowed for a reviewer"

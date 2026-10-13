@@ -25,7 +25,7 @@ callers never ship upstream.
 
 | File | What it does | Caller trigger |
 |---|---|---|
-| `pr-rules.yml` | Branch name, Single author, Protected files, Size, PR title (type and ticket matching the branch, bot commits ignored), PR template, each as a commit status | `pull_request_target` |
+| `pr-rules.yml` | Branch name, Single author, Protected files, Size, PR title (type and ticket matching the branch, bot commits ignored), PR template, each as a commit status. Inputs `enforce_single_author`, `enforce_branch_name` and `enforce_size` (default true) switch a rule off without removing it: it still posts its status as success ("Not enforced"), so a required check keeps reporting. `enforce_branch_name` off also stops the title being compared to the branch | `pull_request_target` |
 | `team-routing.yml` | Requests review from the fork's team leads | `pull_request_target` |
 | `lead-approval.yml` | `Lead approved` status, plus a sweep for PRs not green yet | `pull_request_target`, `workflow_dispatch`, `schedule` |
 | `lead-approval-relay.yml` | Re-checks Lead approved right after a review | `workflow_run` on `Lead approval review` |
