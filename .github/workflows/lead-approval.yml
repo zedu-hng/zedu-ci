@@ -7,6 +7,9 @@ name: Lead approval
 # lead-approval-relay.yml re-dispatches this right after a review, and a scheduled sweep re-dispatches
 # it for PRs that aren't green yet (both trusted, write-capable paths).
 #
+# The `enforce_lead_approval` input (default true) switches the whole gate off: the status is then green
+# with "Not enforced", so the queue and any required check keep working.
+#
 # Green without a lead review: sync/hotfix PRs, same-repo, bot and reviewer PRs, the `lead-verified`
 # label (a lead approved somewhere GitHub can't see), and a team's only lead opening their own PR
 # (Zedu review still applies). A lead's own PR otherwise needs another lead.
@@ -19,6 +22,11 @@ name: Lead approval
 
 on:
   workflow_call:
+    inputs:
+      enforce_lead_approval:
+        description: Require a team lead's approval. Off posts Lead approved as success ("Not enforced").
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -166,11 +174,13 @@ jobs:
           FOUND: ${{ steps.leads.outputs.found }}
           LEADS: ${{ steps.leads.outputs.leads }}
           LABELS: ${{ steps.pr.outputs.labels }}
+          ENFORCE_LEAD: ${{ inputs.enforce_lead_approval }}
         run: |
           set -o pipefail
           # "state|description" for this PR. API failures fail the step: a refused call must never
           # read as "no approvals".
           decide() {
+            if [ "$ENFORCE_LEAD" != true ]; then echo "success|Not enforced"; return; fi
             case ",$LABELS," in
               *,sync,*|*,hotfix,*) echo "success|Sync/hotfix PR; lead approval not enforced"; return ;;
             esac
