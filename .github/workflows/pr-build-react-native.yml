@@ -6,7 +6,7 @@ name: PR build (React Native)
 # Fork build result (Branch name reports the naming problem) instead of waiting forever.
 # The review repo's Fork build relay reads this run's result for the PR's head commit.
 #
-# Backend: every build talks to our dev backend (`default_backend`), or to the host on the PR body's
+# Backend: every build talks to our default backend (`default_backend`, the live API), or to the host on the PR body's
 # `Backend URL: https://api.<team>.groups.zedu.chat` line. .env is written from zedu-ci's
 # `env_template` (public values only; read at this zedu-ci commit) with {{backend}} and {{client}}
 # filled in. Build job names end in " · <backend host>": the relay compares that with the PR body.
@@ -20,7 +20,7 @@ on:
     inputs:
       default_backend:
         type: string
-        default: api.hng.groups.zedu.chat
+        default: api.zedu.chat
       env_template:
         description: Path of the .env template in zedu-ci
         type: string

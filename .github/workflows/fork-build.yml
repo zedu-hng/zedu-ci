@@ -34,7 +34,7 @@ on:
       default_backend:
         description: Backend host builds use when the PR body has no Backend URL line
         type: string
-        default: api.hng.groups.zedu.chat
+        default: api.zedu.chat
       artifact_help:
         description: Markdown lines under the artifact list, saying how to install each build
         type: string
@@ -261,7 +261,7 @@ jobs:
           source .zedu-ci/scripts/lib/backend-url.sh
           backend=$(backend_from_body "$(jq -r '.data.repository.pullRequest.body // ""' <<< "$data")")
           case "$backend" in
-            "") backend=$DEFAULT_BACKEND; state=success; desc="Uses the dev backend ($DEFAULT_BACKEND)" ;;
+            "") backend=$DEFAULT_BACKEND; state=success; desc="Uses the default backend ($DEFAULT_BACKEND)" ;;
             invalid) state=failure; desc="Backend URL must look like https://api.<name>.groups.zedu.chat" ;;
             *) state=failure; desc="Depends on backend $backend. Merge after it's on dev, then delete the Backend URL line." ;;
           esac
@@ -389,7 +389,7 @@ jobs:
             elif [ "$CONCLUSION" != "success" ]; then
               echo "The fork build **$CONCLUSION**: [see the run]($URL). Fix it and push; this updates automatically. Re-ran it in your fork instead? Comment \`/fork-build\`."
             elif [ "$BACKEND" = invalid ]; then
-              echo "The \`Backend URL:\` line in the PR description isn't valid. Use \`Backend URL: https://api.<team>.groups.zedu.chat\`, or delete the line to use the dev backend, then re-run **PR build** in your fork."
+              echo "The \`Backend URL:\` line in the PR description isn't valid. Use \`Backend URL: https://api.<team>.groups.zedu.chat\`, or delete the line to use the default backend (api.zedu.chat), then re-run **PR build** in your fork."
             elif [ -z "$BUILT_BACKEND" ]; then
               echo "This build ran an old copy of PR build that doesn't record its backend. Merge \`dev\` into your branch and push."
             elif [ "$MISMATCH" = "true" ]; then
