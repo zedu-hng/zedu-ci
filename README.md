@@ -62,7 +62,7 @@ check is posted as its own commit status by `pr-review-comment.yml`.
 
 ## Backend for builds
 
-Every fork build talks to our dev backend, `api.hng.groups.zedu.chat`, unless the PR description has
+Every fork build talks to the live backend, `api.zedu.chat` (reviewers use test accounts), unless the PR description has
 a line `Backend URL: https://api.<team>.groups.zedu.chat` (for a PR that needs backend work that isn't
 on dev yet). Then:
 

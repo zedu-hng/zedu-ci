@@ -34,7 +34,7 @@ on:
       default_backend:
         description: Backend host builds use when the PR body has no Backend URL line
         type: string
-        default: api.hng.groups.zedu.chat
+        default: api.zedu.chat
       artifact_help:
         description: Markdown lines under the artifact list, saying how to install each build
         type: string
@@ -261,7 +261,7 @@ jobs:
           source .zedu-ci/scripts/lib/backend-url.sh
           backend=$(backend_from_body "$(jq -r '.data.repository.pullRequest.body // ""' <<< "$data")")
           case "$backend" in
-            "") backend=$DEFAULT_BACKEND; state=success; desc="Uses the dev backend ($DEFAULT_BACKEND)" ;;
+            "") backend=$DEFAULT_BACKEND; state=success; desc="Uses the default backend ($DEFAULT_BACKEND)" ;;
             invalid) state=failure; desc="Backend URL must look like https://api.<name>.groups.zedu.chat" ;;
             *) state=failure; desc="Depends on backend $backend. Merge after it's on dev, then delete the Backend URL line." ;;
           esac
