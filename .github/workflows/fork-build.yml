@@ -389,7 +389,7 @@ jobs:
             elif [ "$CONCLUSION" != "success" ]; then
               echo "The fork build **$CONCLUSION**: [see the run]($URL). Fix it and push; this updates automatically. Re-ran it in your fork instead? Comment \`/fork-build\`."
             elif [ "$BACKEND" = invalid ]; then
-              echo "The \`Backend URL:\` line in the PR description isn't valid. Use \`Backend URL: https://api.<team>.groups.zedu.chat\`, or delete the line to use the dev backend, then re-run **PR build** in your fork."
+              echo "The \`Backend URL:\` line in the PR description isn't valid. Use \`Backend URL: https://api.<team>.groups.zedu.chat\`, or delete the line to use the default backend (api.zedu.chat), then re-run **PR build** in your fork."
             elif [ -z "$BUILT_BACKEND" ]; then
               echo "This build ran an old copy of PR build that doesn't record its backend. Merge \`dev\` into your branch and push."
             elif [ "$MISMATCH" = "true" ]; then
