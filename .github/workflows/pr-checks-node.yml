@@ -338,15 +338,24 @@ jobs:
 
           # Anonymous registry pulls are rate-limited per runner IP: AWS Public ECR answers 429
           # "Data limit exceeded" and Docker Hub 429s too, which fails the preview at build time.
-          # Pull each base image from the first mirror that answers, then retag it as the Dockerfile's
-          # own FROM ref so the build resolves it from the local store and touches no registry.
-          bases=$(awk '/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]/ { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; next } }' "$CFG/Dockerfile" | sort -u)
+          # Pull every image the Dockerfile builds FROM from the first mirror that answers, then
+          # retag it as that FROM ref so the build resolves it from the local store and touches no
+          # registry. Done in Dockerfile order, so an earlier stage reference isn't mistaken for an
+          # image; `scratch`, unterminated build args and stage aliases are left alone. Anything
+          # else, including an unqualified `node`, goes through the mirrors.
+          bases=$(awk '
+            /^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]/ {
+              n = 0
+              for (i = 2; i <= NF; i++) if ($i !~ /^--/) a[++n] = $i
+              if (n == 0) next
+              img = a[1]
+              if (img ~ /\$/ || toupper(img) == "SCRATCH" || tolower(img) in alias) next
+              if (!seen[tolower(img)]++) print img
+              if (n >= 3 && toupper(a[2]) == "AS") alias[tolower(a[3])] = 1
+            }
+          ' "$CFG/Dockerfile")
           while read -r base; do
             [ -n "$base" ] || continue
-            case "$base" in
-              */*|*:*) ;;
-              *) echo "::notice::Skipping FROM $base (build stage, not a registry image)."; continue ;;
-            esac
             name=$base
             for p in public.ecr.aws/docker/library/ docker.io/library/ library/; do name=${name#"$p"}; done
             if [[ "$name" == */* ]]; then
