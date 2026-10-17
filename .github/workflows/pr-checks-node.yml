@@ -335,6 +335,38 @@ jobs:
           [ -d public ] && cp -r public/. "$img/public/"
           cp -r .next/static "$img/public/mainapp/_next/static"
           cp "$CFG/Dockerfile" "$img/Dockerfile"
+
+          # Anonymous registry pulls are rate-limited per runner IP: AWS Public ECR answers 429
+          # "Data limit exceeded" and Docker Hub 429s too, which fails the preview at build time.
+          # Pull each base image from the first mirror that answers, then retag it as the Dockerfile's
+          # own FROM ref so the build resolves it from the local store and touches no registry.
+          bases=$(awk '/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]/ { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; next } }' "$CFG/Dockerfile" | sort -u)
+          while read -r base; do
+            [ -n "$base" ] || continue
+            case "$base" in
+              */*|*:*) ;;
+              *) echo "::notice::Skipping FROM $base (build stage, not a registry image)."; continue ;;
+            esac
+            name=$base
+            for p in public.ecr.aws/docker/library/ docker.io/library/ library/; do name=${name#"$p"}; done
+            if [[ "$name" == */* ]]; then
+              refs=("$base")
+            else
+              refs=("$base" "docker.io/library/$name" "mirror.gcr.io/library/$name")
+            fi
+            pulled=""
+            for ref in "${refs[@]}"; do
+              for try in 1 2 3; do
+                if docker pull -q "$ref" >/dev/null 2>&1; then pulled="$ref"; break; fi
+                [ "$try" = 3 ] || sleep "$((try * 5))"
+              done
+              if [ -n "$pulled" ]; then break; fi
+              echo "::warning::Couldn't pull $ref; trying the next mirror."
+            done
+            [ -n "$pulled" ] || { echo "::error::Couldn't pull base image $base from any mirror."; exit 1; }
+            [ "$pulled" = "$base" ] || docker tag "$pulled" "$base"
+          done <<< "$bases"
+
           docker build -q -t fe-preview:local "$img"
           docker save fe-preview:local | gzip > image.tar.gz
           jq '.image = true' meta.json > meta.tmp && mv meta.tmp meta.json
