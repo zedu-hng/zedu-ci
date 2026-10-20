@@ -31,7 +31,7 @@ callers never ship upstream.
 | `lead-approval-relay.yml` | Re-checks Lead approved right after a review | `workflow_run` on `Lead approval review` |
 | `review-feedback.yml` | Sets/clears the `changes-requested` label and mentions the author and leads when a review requests changes | `workflow_run` on `Lead approval review` |
 | `review-rerequest.yml` | Re-requests the lead after a push on a changes-requested PR | `pull_request_target` (synchronize) |
-| `reviewer-notify.yml` | Ready-for-review queue, `cap` unclaimed PRs per team (input, default 5; the rest are queued). Input `build_context` (default `Fork build`; FE passes `Build`) names the status the queue waits for | `pull_request_target`, `workflow_run`, `schedule`, `workflow_dispatch` |
+| `reviewer-notify.yml` | Ready-for-review queue, `cap` unclaimed PRs per team (input, default 5; the rest are queued). Input `build_context` (default `Fork build`; FE passes `Build`) names the status the queue waits for. Input `tester_gate` (`off` default, `shadow`, `on`) reads the `ZeduTester` status: `on` queues only a PR the tester passed, `shadow` writes what `on` would do to the run summary. A red `No merge conflicts` also keeps a PR out | `pull_request_target`, `workflow_run`, `schedule`, `workflow_dispatch` |
 | `reviewer-claim.yml` | `/claim`, `/release` (the `claimed` label), 24h escalation and release | `issue_comment`, `schedule`, `workflow_dispatch` |
 | `pr-assign.yml` | Assigns a contributor PR to its author | `pull_request_target` |
 | `fork-gate.yml` | Closes a PR opened from a personal-account fork | `pull_request_target` (opened, reopened) |
