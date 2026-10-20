@@ -1,0 +1,98 @@
+name: PR conflicts
+
+# Reusable. Callers: each repo's .github/workflows/pr-conflicts.yml (pull_request_target, push to the
+# base branches, schedule). Never checks out PR code; all data comes from the GitHub API.
+#
+# Posts one commit status, `No merge conflicts`, on every open PR's head: green when the PR merges
+# cleanly into its base, red when it conflicts. A PR turns conflicting when its base moves, not only when
+# it is pushed, so a push to a base branch re-checks every open PR on it. A 1-hour sweep covers answers
+# GitHub had not computed yet. It is not a required check (a conflicting PR cannot merge anyway), but the
+# reviewer queue skips a PR while it is red.
+#
+# `mergeable` is computed lazily: the first read can return null. Each PR is read up to 4 times, 5s
+# apart, and a PR still unknown is left as it was. With `enforce_conflict_check` false the status is
+# posted as success ("Not enforced"), so the check keeps reporting.
+#
+# Caller permissions: contents: read, pull-requests: read, statuses: write.
+
+on:
+  workflow_call:
+    inputs:
+      enforce_conflict_check:
+        description: Fail a PR that conflicts with its base. Off posts No merge conflicts as success.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+
+jobs:
+  conflicts:
+    name: PR conflicts
+    # A PR event only matters when the head or base changed.
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
+      (github.event.action == 'edited' && github.event.changes.base != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EVENT: ${{ github.event_name }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      ENFORCE: ${{ inputs.enforce_conflict_check }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Check conflicts
+        shell: bash
+        run: |
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/status.sh
+          # shellcheck source=/dev/null
+          source .zedu-ci/scripts/lib/conflicts.sh
+
+          # One PR for a PR event, every open PR on a base branch for a push or the sweep. API errors
+          # fail the run: a refused call must never read as "no PRs".
+          if [ "$EVENT" = pull_request_target ]; then
+            pending=$PR_NUMBER
+          else
+            pending=""
+            for base in dev central-staging; do
+              pending="$pending $(gh api --paginate "repos/$REPO/pulls?state=open&base=$base&per_page=100" --jq '.[].number')"
+            done
+          fi
+
+          for attempt in 1 2 3 4; do
+            unknown=""
+            for n in $pending; do
+              read -r mergeable base sha state < <(gh api "repos/$REPO/pulls/$n" \
+                --jq '[.mergeable, .base.ref, .head.sha, .state] | map(tostring) | join(" ")')
+              [ "$state" = open ] || continue
+              verdict=$(conflict_verdict "$mergeable" "$base" "$ENFORCE")
+              if [ -z "$verdict" ]; then
+                unknown="$unknown $n"
+                continue
+              fi
+              status_set "$sha" "No merge conflicts" "${verdict%%|*}" "${verdict#*|}" "$RUN_URL"
+              echo "PR #$n: ${verdict%%|*} ($status_outcome)"
+            done
+            pending=$unknown
+            [ -n "${pending// /}" ] || break
+            [ "$attempt" -lt 4 ] && sleep 5
+          done
+          [ -z "${pending// /}" ] || echo "::notice::Still unknown after 4 reads, left unchanged:$pending"

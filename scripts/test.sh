@@ -29,6 +29,14 @@ check "docs-only: no files" "no" "$(dq 0)"
 check "docs-only: over 100" "no" "$(dq 101 a.md)"
 check "docs-only: list shorter than total" "no" "$(dq 3 a.md b.md)"
 
+# shellcheck source=scripts/lib/conflicts.sh
+source scripts/lib/conflicts.sh
+check "conflicts: clean" "success|No conflicts with dev." "$(conflict_verdict true dev true)"
+check "conflicts: conflicting" "failure|Conflicts with dev. Merge or rebase dev, then push." "$(conflict_verdict false dev true)"
+check "conflicts: unknown" "" "$(conflict_verdict null dev true)"
+check "conflicts: off, conflicting" "success|Not enforced" "$(conflict_verdict false dev false)"
+check "conflicts: off, unknown" "success|Not enforced" "$(conflict_verdict null dev false)"
+
 # Stub gh: status reads come from $STATUSES, writes are logged to $WRITES.
 WRITES=$(mktemp); READS=$(mktemp)
 gh() {
