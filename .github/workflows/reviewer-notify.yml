@@ -9,7 +9,7 @@ name: Reviewer notify
 #   to its author. A claimed PR keeps the label but doesn't occupy a slot. If a push clears the
 #   ready label while a new head is re-checked, it is restored once the PR is green again.
 # - PRs that go back to draft or fail a gate lose the labels and re-queue later. A PR that conflicts with its
-#   base (`No merge conflicts` is red) fails the gate too; a PR with no such status yet is not held back.
+#   base (`No merge conflicts (<base>)` is red) fails the gate too; a PR with no such status yet is not held back.
 # The author is assigned; reviewers claim with a label. Never checks out PR code.
 #
 # Every run re-evaluates the whole queue (a slot freed on one PR promotes another), so runs share one
@@ -109,7 +109,8 @@ jobs:
             | ([.commits.nodes[0].commit.status.contexts[]? | {(.context): .state}] | add // {}) as $st
             | [.number, (.headRepositoryOwner.login // "deleted"), .createdAt, (.isDraft | tostring),
                ([.labels.nodes[].name] | join(",")),
-               ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""), ($st[env.CONFLICT_CONTEXT] // ""), .headRefOid]
+               ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""),
+               ($st[env.CONFLICT_CONTEXT + " (" + .baseRefName + ")"] // ""), .headRefOid]
             | join("|")' > prs.txt
           echo "$(wc -l < prs.txt) open contributor PRs"
           : > rows.tsv

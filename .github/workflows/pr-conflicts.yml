@@ -3,11 +3,13 @@ name: PR conflicts
 # Reusable. Callers: each repo's .github/workflows/pr-conflicts.yml (pull_request_target, push to the
 # base branches, schedule). Never checks out PR code; all data comes from the GitHub API.
 #
-# Posts one commit status, `No merge conflicts`, on every open PR's head: green when the PR merges
-# cleanly into its base, red when it conflicts. A PR turns conflicting when its base moves, not only when
-# it is pushed, so a push to a base branch re-checks every open PR on it. A 1-hour sweep covers answers
-# GitHub had not computed yet. It is not a required check (a conflicting PR cannot merge anyway), but the
-# reviewer queue skips a PR while it is red.
+# Posts one commit status per base, `No merge conflicts (<base>)`, on every open PR's head: green when
+# the PR merges cleanly into its base, red when it conflicts. A context includes the base because a
+# commit can be the head of two PRs with different bases, and statuses attach to the commit, not the PR.
+# A PR turns conflicting when its base moves, not only when it is pushed, so a push to a base branch
+# re-checks every open PR on it. A 1-hour sweep covers answers GitHub had not computed yet. It is not a
+# required check (a conflicting PR cannot merge anyway), but the reviewer queue skips a PR while its
+# base's status is red.
 #
 # `mergeable` is computed lazily: the first read can return null. Each PR is read up to 4 times, 5s
 # apart, and a PR still unknown is left as it was. With `enforce_conflict_check` false the status is
@@ -88,7 +90,7 @@ jobs:
                 unknown="$unknown $n"
                 continue
               fi
-              status_set "$sha" "No merge conflicts" "${verdict%%|*}" "${verdict#*|}" "$RUN_URL"
+              status_set "$sha" "No merge conflicts ($base)" "${verdict%%|*}" "${verdict#*|}" "$RUN_URL"
               echo "PR #$n: ${verdict%%|*} ($status_outcome)"
             done
             pending=$unknown
