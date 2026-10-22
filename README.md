@@ -35,7 +35,7 @@ callers never ship upstream.
 | `reviewer-claim.yml` | `/claim`, `/release` (the `claimed` label), 24h escalation and release | `issue_comment`, `schedule`, `workflow_dispatch` |
 | `pr-assign.yml` | Assigns a contributor PR to its author | `pull_request_target` |
 | `fork-gate.yml` | Closes a PR opened from a personal-account fork | `pull_request_target` (opened, reopened) |
-| `pr-conflicts.yml` | `No merge conflicts` status on every open PR: red when it conflicts with its base. A push to a base branch re-checks every open PR on it; a 1h sweep covers answers GitHub had not computed. Input `enforce_conflict_check` (default true) posts success ("Not enforced") when off. Not a required check; the reviewer queue skips a red PR | `pull_request_target`, `push`, `schedule` (1h), `workflow_dispatch` |
+| `pr-conflicts.yml` | `No merge conflicts (<base>)` status on every open PR: red when it conflicts with its base. The base is in the context so two PRs with the same head SHA stay separate. A push to a base branch re-checks every open PR on it; a 1h sweep covers answers GitHub had not computed. Input `enforce_conflict_check` (default true) posts success ("Not enforced") when off. Not a required check; the reviewer queue skips a red PR | `pull_request_target`, `push`, `schedule` (1h), `workflow_dispatch` |
 | `pr-nudges.yml` | Nudges unresolved review threads and merge conflicts (4h per PR) | `schedule` (2h), `workflow_dispatch` |
 | `update-branch.yml` | Updates behind PR branches; nudges the author and leads if it can't | `schedule` (hourly), `workflow_dispatch` |
 | `pr-review-comment.yml` | Posts PR checks / PR scans results as statuses, plus the review bot comment | `workflow_run` on `PR checks`, `PR scans` |
