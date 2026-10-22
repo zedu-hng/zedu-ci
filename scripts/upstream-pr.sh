@@ -125,7 +125,7 @@ new=${new_url##*/}
 
 # Older open batches are contained in the new one. Point them at it.
 while IFS=$'\t' read -r num _; do
-  [ -n "$num" ] && [ "$num" != "$new" ] || continue
+  if [ -z "$num" ] || [ "$num" = "$new" ]; then continue; fi
   old=$(mktemp)
   gh pr view "$num" -R "$UPSTREAM_REPO" --json body --jq .body > "$old"
   if ! grep -qF "$marker" "$old"; then
