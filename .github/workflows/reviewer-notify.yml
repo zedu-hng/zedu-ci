@@ -10,6 +10,10 @@ name: Reviewer notify
 #   ready label while a new head is re-checked, it is restored once the PR is green again.
 # - PRs that go back to draft or fail a gate lose the labels and re-queue later. A PR that conflicts with its
 #   base (`No merge conflicts (<base>)` is red) fails the gate too; a PR with no such status yet is not held back.
+# - Tester gate (input `tester_gate`, default off): reads the `ZeduTester` commit status the AI tester posts
+#   on the head it reviewed. `on` queues a PR only when that status is green, so a PR the tester rejected
+#   or has not reviewed yet does not ping reviewers. `shadow` changes nothing and writes, per eligible PR,
+#   what `on` would have done to the run summary, to compare with what reviewers do before turning it on.
 # The author is assigned; reviewers claim with a label. Never checks out PR code.
 #
 # Every run re-evaluates the whole queue (a slot freed on one PR promotes another), so runs share one
@@ -37,6 +41,12 @@ on:
           whose build runs in the contributor's fork. FE passes "Build", the result of its own PR checks.
         type: string
         default: Fork build
+      tester_gate:
+        description: >-
+          Use the ZeduTester commit status in the queue. "off" ignores it. "shadow" ignores it but writes
+          what "on" would do to the run summary. "on" queues a PR only when ZeduTester is green on its head.
+        type: string
+        default: "off"
       cap:
         description: >-
           How many unclaimed ready-for-review PRs one team can have at once. The rest are queued and
@@ -62,6 +72,8 @@ env:
   CLAIMED_LABEL: claimed
   REVIEWERS: zedu-hng/reviewers
   CAP: ${{ inputs.cap }}
+  TESTER_CONTEXT: ZeduTester
+  TESTER_GATE: ${{ inputs.tester_gate }}
 
 jobs:
   notify:
@@ -110,16 +122,29 @@ jobs:
             | [.number, (.headRepositoryOwner.login // "deleted"), .createdAt, (.isDraft | tostring),
                ([.labels.nodes[].name] | join(",")),
                ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""),
-               ($st[env.CONFLICT_CONTEXT + " (" + .baseRefName + ")"] // ""), .headRefOid]
+               ($st[env.CONFLICT_CONTEXT + " (" + .baseRefName + ")"] // ""), .headRefOid, ($st[env.TESTER_CONTEXT] // "")]
             | join("|")' > prs.txt
           echo "$(wc -l < prs.txt) open contributor PRs"
           : > rows.tsv
-          while IFS='|' read -r num owner created draft labels lead build conflict sha; do
+          case "$TESTER_GATE" in
+            off | shadow | on) ;;
+            *) echo "::error::tester_gate must be off, shadow or on, got '$TESTER_GATE'."; exit 1 ;;
+          esac
+          [ "$TESTER_GATE" != shadow ] || printf '| PR | ZeduTester | Gate "on" would |\n|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          while IFS='|' read -r num owner created draft labels lead build conflict sha tester; do
             case ",$labels," in *,sync,*|*,hotfix,*) continue ;; esac
             green=false
             if grep -qixF "$owner" teams.txt && [ "$lead" = SUCCESS ] && [ "$build" = SUCCESS ] \
                 && [ "$conflict" != FAILURE ] && [ "$conflict" != ERROR ]; then
               green=true
+              # The status is per SHA: a new push has none until the tester reviews it. Absent
+              # reads as "not reviewed yet", never as clean.
+              if [ "$TESTER_GATE" = shadow ]; then
+                verdict=hold; [ "$tester" != SUCCESS ] || verdict=queue
+                printf '| #%s | %s | %s |\n' "$num" "${tester:-none}" "$verdict" >> "$GITHUB_STEP_SUMMARY"
+              elif [ "$TESTER_GATE" = on ] && [ "$tester" != SUCCESS ]; then
+                green=false
+              fi
             fi
             printf '%s|%s|%s|%s|%s|%s|%s\n' \
               "$num" "$owner" "$created" "$draft" "$labels" "$green" "$sha" >> rows.tsv
