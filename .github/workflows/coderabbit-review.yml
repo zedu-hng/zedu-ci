@@ -65,7 +65,13 @@ jobs:
               per_page: 100,
             });
 
-            if (comments.some((comment) => comment.body?.includes(marker))) {
+            if (
+              comments.some(
+                (comment) =>
+                  comment.user?.login === "github-actions[bot]" &&
+                  comment.body === `@coderabbitai review\n\n${marker}`,
+              )
+            ) {
               core.info(`CodeRabbit review already requested for ${headSha}.`);
               return;
             }
