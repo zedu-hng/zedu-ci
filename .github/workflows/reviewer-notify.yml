@@ -8,7 +8,8 @@ name: Reviewer notify
 # - A claim is the `claimed` label (reviewer-claim adds it), not an assignee: every PR is assigned
 #   to its author. A claimed PR keeps the label but doesn't occupy a slot. If a push clears the
 #   ready label while a new head is re-checked, it is restored once the PR is green again.
-# - PRs that go back to draft or fail a gate lose the labels and re-queue later.
+# - PRs that go back to draft or fail a gate lose the labels and re-queue later. A PR that conflicts with its
+#   base (`No merge conflicts (<base>)` is red) fails the gate too; a PR with no such status yet is not held back.
 # The author is assigned; reviewers claim with a label. Never checks out PR code.
 #
 # Every run re-evaluates the whole queue (a slot freed on one PR promotes another), so runs share one
@@ -54,6 +55,7 @@ env:
   REPO: ${{ github.repository }}
   CI_REPO: zedu-hng/zedu-ci
   LEAD_CONTEXT: Lead approved
+  CONFLICT_CONTEXT: No merge conflicts
   BUILD_CONTEXT: ${{ inputs.build_context }}
   REVIEW_LABEL: ready-for-review
   QUEUED_LABEL: queued
@@ -107,14 +109,16 @@ jobs:
             | ([.commits.nodes[0].commit.status.contexts[]? | {(.context): .state}] | add // {}) as $st
             | [.number, (.headRepositoryOwner.login // "deleted"), .createdAt, (.isDraft | tostring),
                ([.labels.nodes[].name] | join(",")),
-               ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""), .headRefOid]
+               ($st[env.LEAD_CONTEXT] // ""), ($st[env.BUILD_CONTEXT] // ""),
+               ($st[env.CONFLICT_CONTEXT + " (" + .baseRefName + ")"] // ""), .headRefOid]
             | join("|")' > prs.txt
           echo "$(wc -l < prs.txt) open contributor PRs"
           : > rows.tsv
-          while IFS='|' read -r num owner created draft labels lead build sha; do
+          while IFS='|' read -r num owner created draft labels lead build conflict sha; do
             case ",$labels," in *,sync,*|*,hotfix,*) continue ;; esac
             green=false
-            if grep -qixF "$owner" teams.txt && [ "$lead" = SUCCESS ] && [ "$build" = SUCCESS ]; then
+            if grep -qixF "$owner" teams.txt && [ "$lead" = SUCCESS ] && [ "$build" = SUCCESS ] \
+                && [ "$conflict" != FAILURE ] && [ "$conflict" != ERROR ]; then
               green=true
             fi
             printf '%s|%s|%s|%s|%s|%s|%s\n' \
