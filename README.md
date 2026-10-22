@@ -3,8 +3,8 @@
 Shared review-org workflows for `zedu-hng/zedu-fe`, `zedu-hng/zedu-mobile`, `zedu-hng/zedu-desktop` and `zedu-hng/zedu-be`.
 Each repo keeps short caller workflows that set the triggers and permissions, then call the files here.
 
-Nothing here ever runs against `zeduchat`. Release batches leave out `.github/` in every repo, so the
-callers never ship upstream.
+Nothing here touches `zeduchat` except `upstream-batch.yml` and `upstream-sync.yml`. The batch opens a PR
+there with ticket commits only, and leaves out `.github/` in every repo, so the callers never ship upstream.
 
 ## How it fits together
 
@@ -56,6 +56,8 @@ callers never ship upstream.
 | `pr-build-react-native.yml` | Fork side: Android APK and iOS simulator build (zedu-mobile) | `push`, `workflow_dispatch` in the fork |
 | `pr-build-flutter.yml` | Fork side: macOS, Windows and Linux builds (zedu-desktop) | `push`, `workflow_dispatch` in the fork |
 | `build-gate.yml` | Nested in both PR builds: open-PR check, backend and `.env` | called by the two files above |
+| `upstream-batch.yml` | Builds the batch of ticket commits zeduchat doesn't have, opens the PR there with the merged PR's own title and body, marks older open batch PRs superseded (link only without `UPSTREAM_TOKEN`) | `push` to `dev`, `workflow_dispatch` (mobile, desktop) |
+| `upstream-sync.yml` | Daily merge `zeduchat:central-staging` into `central-staging`, then into `dev`; a sync PR when a merge conflicts or changes review-org paths | `schedule`, `workflow_dispatch` (mobile, desktop) |
 
 Checks run Zedu's own scripts and configs from the base branch, so a PR can't loosen them. Each
 check is posted as its own commit status by `pr-review-comment.yml`.
@@ -99,6 +101,8 @@ the workflow and need no second SHA in the callers:
 | `lib/backend-url.sh` (`backend_from_body`) | build gate (fork side), fork build relay |
 | `lib/docs-only.sh` (`docs_only`: a Markdown-only PR needs no build) | build gate (fork side), fork build relay |
 | `lib/open-prs.sh` (`open_prs`, `open_prs_merge_state`, `open_prs_with_review_state`: paginated GraphQL reads of every open PR, small pages, one retry) | lead approval and fork build sweeps, reviewer notify, recheck, update-branch, pr-nudges |
+| `upstream-batch.sh`, `upstream-pr.sh` (replay ticket commits onto zeduchat's branch, open the PR) | upstream batch |
+| `sync-merge.sh` (merge with a merge commit, or report a conflict) | upstream sync |
 | `publish-results.sh` (the results format `pr-review-comment.yml` reads) | PR checks (Node, Flutter), PR scans |
 | `obfuscation-scan.sh` (hidden or obfuscated code in the lines a PR adds: whitespace padding, giant lines, `_0x` code, loaders wired into `package.json`, disguised fonts; data in `obfuscation-iocs.txt` and `known-bad-blobs.txt`) | PR scans |
 

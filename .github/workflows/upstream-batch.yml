@@ -1,0 +1,111 @@
+name: Upstream batch
+
+# Reusable. Caller: each repo's .github/workflows/upstream-batch.yml (push to dev, workflow_dispatch).
+#
+# Builds batch/<date> from the upstream branch plus every ticket commit merged here since, minus
+# review-org changes (PRs labelled `skip_label`, and paths in the repo's .github/upstream-exclude).
+# A batch holds every commit upstream has not merged yet, so the newest one carries the earlier ones.
+# It pushes the branch here, then opens the PR upstream with the title and body of the newest merged
+# PR in the batch, plus a footer. Earlier open batch PRs get a "superseded" note. Without the
+# UPSTREAM_TOKEN secret it only writes a prefilled link and the PR text to the run summary.
+# A batch whose tree matches an open batch PR is not sent again.
+#
+# UPSTREAM_TOKEN needs to open and edit PRs on `upstream_repo`. Keep it as an org secret limited to the
+# repos that call this, and pass it explicitly.
+# Caller permissions: contents: write, pull-requests: read.
+
+on:
+  workflow_call:
+    inputs:
+      upstream_repo:
+        description: Upstream repo the batch goes to, e.g. zeduchat/zedu-mobile
+        type: string
+        required: true
+      upstream_branch:
+        description: Upstream branch the PR targets
+        type: string
+        default: central-staging
+      source:
+        description: Review-org branch to send
+        type: string
+        default: dev
+      skip_label:
+        description: PR label whose commits are left out
+        type: string
+        default: review-org-only
+    secrets:
+      UPSTREAM_TOKEN:
+        description: Token that can open and edit PRs on upstream_repo. Optional.
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  batch:
+    name: Build upstream batch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # bash (not the default sh-style "bash -e") enables pipefail, so a failing script isn't masked by tee.
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPO: ${{ inputs.upstream_repo }}
+      UPSTREAM_BRANCH: ${{ inputs.upstream_branch }}
+      SOURCE: ${{ inputs.source }}
+      SKIP_LABEL: ${{ inputs.skip_label }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # zedu-ci's scripts at this workflow's own commit, so they're pinned with it.
+      - name: Check out zedu-ci scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .zedu-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Fetch branches
+        run: |
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch -q upstream "$UPSTREAM_BRANCH"
+          git fetch -q origin "$SOURCE"
+
+      # The batch base (upstream) has neither the scripts nor the exclude list, so run copies.
+      - name: Build batch
+        id: batch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp .github/upstream-exclude "$RUNNER_TEMP/upstream-exclude"
+          cp .zedu-ci/scripts/upstream-batch.sh .zedu-ci/scripts/upstream-pr.sh "$RUNNER_TEMP/"
+          branch="batch/$(date -u +%Y%m%d-%H%M)"
+          BASE_REF="upstream/$UPSTREAM_BRANCH" SOURCE_REF="origin/$SOURCE" REVIEW_REPO="$GITHUB_REPOSITORY" \
+            OUT_BRANCH="$branch" EXCLUDE_FILE="$RUNNER_TEMP/upstream-exclude" \
+            bash "$RUNNER_TEMP/upstream-batch.sh" | tee "$RUNNER_TEMP/out.txt"
+          mv batch-summary.md batch-sent.tsv "$RUNNER_TEMP/"
+          {
+            echo "branch=$branch"
+            grep '^sent=' "$RUNNER_TEMP/out.txt"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push and open PR
+        env:
+          BRANCH: ${{ steps.batch.outputs.branch }}
+          SENT: ${{ steps.batch.outputs.sent }}
+          REVIEW_REPO: ${{ github.repository }}
+          UPSTREAM_TOKEN: ${{ secrets.UPSTREAM_TOKEN }}
+        run: |
+          summary="$RUNNER_TEMP/batch-summary.md"
+          if [ "$SENT" -eq 0 ]; then
+            { cat "$summary"; echo; echo "Nothing to send: no ticket commits since the last batch."; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          SENT_FILE="$RUNNER_TEMP/batch-sent.tsv" SUMMARY="$summary" bash "$RUNNER_TEMP/upstream-pr.sh"
