@@ -1,0 +1,79 @@
+name: CodeRabbit review
+
+# Reusable. Public repositories with fewer than 10 stars are not reviewed automatically by CodeRabbit;
+# someone has to comment `@coderabbitai review`. This posts that command for every PR update so the
+# review starts alongside the repo's other PR jobs. One comment per head SHA: a push re-triggers, a
+# duplicate event does not.
+#
+# Caller: pull_request_target (opened, synchronize, reopened, ready_for_review) and workflow_dispatch
+# with `pr`. Draft PRs are skipped. The caller owns triggers, concurrency and IS_BOOTCAMP.
+# Caller permissions: contents: read, pull-requests: write, issues: write.
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        description: Pull request number for workflow_dispatch. Ignored for pull_request_target.
+        type: number
+        required: false
+        default: 0
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  request-review:
+    name: Request CodeRabbit review
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Comment @coderabbitai review
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        with:
+          script: |
+            const issue_number = Number(process.env.PR_NUMBER);
+            if (!Number.isInteger(issue_number) || issue_number <= 0) {
+              core.info("No valid PR number; nothing to do.");
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            let headSha = process.env.HEAD_SHA;
+
+            if (!headSha) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: issue_number,
+              });
+              headSha = pr.head.sha;
+            }
+
+            const marker = `<!-- coderabbit-auto-review:${headSha} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info(`CodeRabbit review already requested for ${headSha}.`);
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `@coderabbitai review\n\n${marker}`,
+            });
+            core.info(`Requested CodeRabbit review for ${headSha} on #${issue_number}.`);

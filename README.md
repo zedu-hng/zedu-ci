@@ -39,6 +39,7 @@ callers never ship upstream.
 | `update-branch.yml` | Updates behind PR branches; nudges the author and leads if it can't | `schedule` (hourly), `workflow_dispatch` |
 | `pr-review-comment.yml` | Posts PR checks / PR scans results as statuses, plus the review bot comment | `workflow_run` on `PR checks`, `PR scans` |
 | `pr-review-recheck.yml` | Re-runs checks that failed only on PR review after a rule fix lands | `push` to dev and central-staging |
+| `coderabbit-review.yml` | Posts `@coderabbitai review` for each PR head SHA, so public repos under 10 stars get a review without a manual trigger | `pull_request_target`, `workflow_dispatch` |
 
 `lead-approval-review.yml` stays a plain workflow in each repo: it only exists to fire the relay.
 
