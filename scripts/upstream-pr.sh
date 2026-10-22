@@ -46,17 +46,24 @@ while IFS=$'\t' read -r num head; do
   fi
 done < <(open_batches)
 
-# Newest sent commit with a merged PR gives the text. Older ones are listed as included.
+# Newest sent commit with a merged PR gives the text. Each older PR (a PR can have several commits)
+# is listed once, in the order it was merged.
 text_pr="" text_title="" included=""
+declare -A titles=()
+order=()
 while IFS=$'\t' read -r sha _; do
   row=$(pr_of "$sha" || true)
   [ -n "$row" ] || continue
-  if [ -n "$text_pr" ]; then
-    included+="- $REVIEW_REPO#$text_pr $text_title"$'\n'
-  fi
   text_pr=${row%%$'\t'*}
   text_title=${row#*$'\t'}
+  if [ -z "${titles[$text_pr]+x}" ]; then order+=("$text_pr"); fi
+  titles[$text_pr]=$text_title
 done < "$SENT_FILE"
+for n in "${order[@]+"${order[@]}"}"; do
+  if [ "$n" != "$text_pr" ]; then
+    included+="- $REVIEW_REPO#$n ${titles[$n]}"$'\n'
+  fi
+done
 
 if [ -z "$text_pr" ]; then
   echo "::error::No merged $REVIEW_REPO PR found for the commits in this batch." >&2
