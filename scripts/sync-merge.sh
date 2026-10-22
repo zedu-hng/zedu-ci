@@ -6,7 +6,8 @@
 #   SOURCE_LABEL       name used in the commit message, e.g. zeduchat/zedu-mobile:central-staging
 #   EXCLUDE_FILE       review-org paths (default .github/upstream-exclude, from the current checkout)
 #   RESOLUTION_REF     a reviewer's branch whose tip is the resolved merge; pushed instead of merging,
-#                      only if that tip is one merge commit with parents exactly TARGET and SOURCE_REF
+#                      only if that tip is one merge commit with parents exactly TARGET and SOURCE_REF,
+#                      and differs from an automatic merge of the two only in the files that conflicted
 #   APPROVE_PROTECTED  1 = a reviewer checked the review-org path changes; merge them too
 #   DRY_RUN            1 = merge locally, don't push
 #
@@ -16,7 +17,8 @@
 # Writes the outcome to sync-result.md.
 set -euo pipefail
 diff_file=$(mktemp)
-trap 'rm -f "$diff_file"' EXIT
+merge_file=$(mktemp)
+trap 'rm -f "$diff_file" "$merge_file"' EXIT
 
 : "${TARGET:?}" "${SOURCE_REF:?}" "${SOURCE_LABEL:?}"
 EXCLUDE_FILE=${EXCLUDE_FILE:-.github/upstream-exclude}
@@ -46,6 +48,41 @@ if [ -n "${RESOLUTION_REF:-}" ]; then
   # Exactly one merge commit on top of TARGET: extra commits would ride the ruleset bypass unreviewed.
   if [ "$(git rev-list --parents -n1 "$resolution")" != "$resolution $base $source" ]; then
     echo "\`$RESOLUTION_REF\` must be one merge commit with parents \`$TARGET\` (${base:0:7}) then ${source:0:7}, nothing else. Recreate it from the current \`$TARGET\`." | tee sync-result.md
+    exit 3
+  fi
+  # The parents only prove the shape. Redo the merge in memory: the resolution may differ from it only in
+  # the paths that conflicted. Anything else rides the ruleset bypass unreviewed (an "evil merge").
+  # Through a file: command substitution drops the NUL bytes of -z output.
+  rc=0
+  git merge-tree --write-tree --name-only -z "$base" "$source" > "$merge_file" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "::error::git merge-tree failed (exit $rc) for $TARGET and $SOURCE_LABEL." >&2
+    exit 1
+  fi
+  # Output: tree id, the conflicted paths, an empty field, then informational messages.
+  mapfile -d '' -t fields < "$merge_file"
+  auto_tree=${fields[0]}
+  conflicted=$'\n'
+  if [ "$rc" -eq 1 ]; then
+    for field in "${fields[@]:1}"; do
+      [ -n "$field" ] || break
+      conflicted+="$field"$'\n'
+    done
+  fi
+  git diff --no-renames --name-only -z "$auto_tree" "$resolution^{tree}" > "$diff_file"
+  hidden=()
+  while IFS= read -r -d '' path; do
+    [[ "$conflicted" == *$'\n'"$path"$'\n'* ]] || hidden+=("$path")
+  done < "$diff_file"
+  if [ "${#hidden[@]}" -gt 0 ]; then
+    {
+      echo "\`$RESOLUTION_REF\` changes files that did not conflict, so it is not a plain resolution:"
+      echo
+      # shellcheck disable=SC2016 # literal backticks: Markdown code spans
+      printf -- '- `%s`\n' "${hidden[@]}"
+      echo
+      echo "Recreate it with \`git merge --no-ff ${source:0:7}\` from \`$TARGET\`, touching only the conflicted files."
+    } | tee sync-result.md
     exit 3
   fi
   git switch -q -C "sync-$TARGET" "$resolution"

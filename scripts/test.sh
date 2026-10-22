@@ -511,4 +511,43 @@ check "pr-rules: with all three off a consolidated PR has no failure" "0" "$(gre
 check "pr-rules: all three still post their status, so required checks keep reporting" "3" "$(grep -c -E '^(Branch name|Single author|Size)\|success\|Not enforced' <<< "$out")"
 rm -rf "$PRT"
 
+# sync-merge.sh: a resolution may differ from an automatic merge only in the files that conflicted.
+SM="$PWD/scripts/sync-merge.sh"
+SMT=$(mktemp -d)
+(
+  cd "$SMT" || exit 1
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+  g() { git -c init.defaultBranch=dev -c core.hooksPath=/dev/null "$@" > /dev/null; }
+  g init -q
+  printf 'one\n' > a.txt; printf 'keep\n' > b.txt; printf 'keep\n' > c.txt
+  printf '.github/\n' > exclude
+  g add -A; g commit -q -m base
+  g switch -q -c upstream
+  printf 'theirs\n' > a.txt; printf 'new\n' > d.txt
+  g commit -q -am source
+  g switch -q dev
+  printf 'ours\n' > a.txt
+  g commit -q -am target
+  g update-ref refs/remotes/origin/dev dev
+  # A plain resolution: a.txt resolved, d.txt comes from the source.
+  g switch -q -c good dev
+  g merge -q --no-ff --no-commit upstream || true
+  printf 'both\n' > a.txt; g add a.txt
+  g commit -q -m resolve
+  # The same plus a change to a file that never conflicted.
+  g switch -q -c evil dev
+  g merge -q --no-ff --no-commit upstream || true
+  printf 'both\n' > a.txt; printf 'evil\n' > c.txt; g add a.txt c.txt
+  g commit -q -m resolve
+  g switch -q dev
+) || echo "FAIL sync-merge setup"
+sm() { (cd "$SMT" && TARGET=dev SOURCE_REF=upstream SOURCE_LABEL=upstream EXCLUDE_FILE=exclude DRY_RUN=1 RESOLUTION_REF="$1" bash "$SM" > /dev/null 2>&1; echo "$?|$(cat sync-result.md 2> /dev/null)"); }
+good=$(sm good)
+check "sync-merge: a resolution that only fixes the conflict is accepted" "0" "${good%%|*}"
+evil=$(sm evil)
+check "sync-merge: a hidden change to another file is refused" "3" "${evil%%|*}"
+check "sync-merge: ...and names the file" "1" "$(grep -c -- '- .c.txt.' <<< "$evil")"
+check "sync-merge: ...but not the conflicted one" "0" "$(grep -c -- '- .a.txt.' <<< "$evil")"
+rm -rf "$SMT"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
