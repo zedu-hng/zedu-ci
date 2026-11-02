@@ -3,21 +3,32 @@ name: Update branch
 # Reusable. Keeps contributor PR branches current with their base, so review and the fork build are
 # not done against stale code. Hourly, for each contributor PR, it compares the branch to its base
 # (mergeStateStatus reports BLOCKED for a behind PR that also awaits review, so it can't be used) and,
-# when behind, asks GitHub to merge the base into the head (gh pr update-branch). A merge commit
-# created this way is authored by github-actions[bot] and PR rules' Single author check ignores it.
+# when behind, asks GitHub to merge the base into the head (gh pr update-branch).
 #
-# For a fork PR the base token usually can't push to the fork (the fork must allow maintainer edits),
+# Why the update uses the zedu-ci-bot app token and not github.token: a push made with github.token
+# does not start workflows, so the merge commit lands with no PR rules, Team routing or Fork build
+# and the PR stays BLOCKED on required statuses that never get posted for the new head. A push made
+# with a GitHub App installation token does start them. The merge commit is authored by
+# zedu-ci-bot[bot] (github-actions[bot] without the app) and PR rules' Single author check ignores
+# both. Without the app secret and variable, the sweep falls back to github.token as before.
+#
+# For a fork PR the token usually can't push to the fork (the fork must allow maintainer edits),
 # so when the update fails this nudges the author and the team lead(s) to update it themselves. A
 # marker comment bounds attempts to once per ATTEMPT_HOURS per PR, so a PR is not updated (or nudged)
 # every hour.
 #
 # Trusted: schedule from the default branch, never checks out PR code.
 #
-# Caller: schedule (e.g. hourly) and workflow_dispatch. The caller adds IS_BOOTCAMP.
+# Caller: schedule (e.g. hourly) and workflow_dispatch. The caller adds IS_BOOTCAMP, passes the
+# ZEDU_CI_BOT_PRIVATE_KEY secret (secrets: inherit works) and has the ZEDU_CI_BOT_APP_ID variable.
 # Caller permissions: contents: write, pull-requests: write, issues: write.
 
 on:
   workflow_call:
+    secrets:
+      ZEDU_CI_BOT_PRIVATE_KEY:
+        description: Private key of the zedu-ci-bot GitHub App (id in the ZEDU_CI_BOT_APP_ID variable)
+        required: false
 
 permissions:
   contents: write
@@ -30,6 +41,7 @@ env:
   CI_REPO: zedu-hng/zedu-ci
   ATTEMPT_HOURS: "6"
   MARKER: "<!-- zedu-update-branch -->"
+  HAS_BOT: ${{ secrets.ZEDU_CI_BOT_PRIVATE_KEY != '' && vars.ZEDU_CI_BOT_APP_ID != '' }}
 
 jobs:
   update:
@@ -53,7 +65,24 @@ jobs:
           source .zedu-ci/scripts/lib/teams.sh
           team_orgs > teams.txt
 
+      # Used only for the update call below. Comments, compares and listing stay on github.token.
+      - name: Mint zedu-ci-bot token
+        id: bot
+        if: env.HAS_BOT == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.ZEDU_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.ZEDU_CI_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Note the fallback
+        if: env.HAS_BOT != 'true'
+        run: echo "::notice::zedu-ci-bot is not configured here (ZEDU_CI_BOT_PRIVATE_KEY or ZEDU_CI_BOT_APP_ID missing); updates use github.token, so the new head gets no PR rules or Fork build."
+
       - name: Update
+        env:
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
         run: |
           set -o pipefail
           # shellcheck disable=SC2016 # jq programs use $name variables inside single quotes
@@ -110,7 +139,7 @@ jobs:
               fi
             fi
 
-            if gh pr update-branch "$num" --repo "$REPO" >/dev/null 2>&1; then
+            if GH_TOKEN="${BOT_TOKEN:-$GH_TOKEN}" gh pr update-branch "$num" --repo "$REPO" >/dev/null 2>&1; then
               body="Updated this branch with the latest \`$base\`."
               echo "PR #$num: updated"
             else
