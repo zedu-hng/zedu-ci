@@ -69,6 +69,8 @@ jobs:
       - name: Mint zedu-ci-bot token
         id: bot
         if: env.HAS_BOT == 'true'
+        # A failed mint (key rotated, app not installed on this repo) must not stop the sweep.
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.ZEDU_CI_BOT_APP_ID }}
@@ -77,8 +79,8 @@ jobs:
           permission-pull-requests: write
 
       - name: Note the fallback
-        if: env.HAS_BOT != 'true'
-        run: echo "::notice::zedu-ci-bot is not configured here (ZEDU_CI_BOT_PRIVATE_KEY or ZEDU_CI_BOT_APP_ID missing); updates use github.token, so the new head gets no PR rules or Fork build."
+        if: env.HAS_BOT != 'true' || steps.bot.outcome == 'failure'
+        run: echo "::warning::No zedu-ci-bot token (ZEDU_CI_BOT_PRIVATE_KEY or ZEDU_CI_BOT_APP_ID missing, or the token step failed); updates use github.token, so the new head gets no PR rules or Fork build."
 
       - name: Update
         env:
