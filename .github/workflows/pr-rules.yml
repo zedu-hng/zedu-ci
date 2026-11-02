@@ -210,8 +210,9 @@ jobs:
             else
               # GitHub login when the commit email is linked to an account, otherwise the author email.
               # Only known bot accounts/emails are dropped (the update-branch merge commit is authored
-              # by github-actions[bot]); a human whose name merely contains "github-actions" still counts.
-              bot='^[0-9]*\+?(dependabot|github-actions|renovate|codecov)\[bot\](@users\.noreply\.github\.com)?$'
+              # by zedu-ci-bot[bot], or github-actions[bot] without the app); a human whose name merely
+              # contains "github-actions" still counts.
+              bot='^[0-9]*\+?(dependabot|github-actions|renovate|codecov|zedu-ci-bot)\[bot\](@users\.noreply\.github\.com)?$'
               authors=$(printf '%s\n' "$raw" | grep -vE "$bot" | sort -u)
               count=$(grep -c . <<< "$authors" || true)
               echo "Commit authors: $(tr '\n' ' ' <<< "$authors")"
